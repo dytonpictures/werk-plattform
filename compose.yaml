@@ -1,0 +1,76 @@
+name: werk
+
+services:
+  werk-postgres:
+    image: postgres:18.4-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-werk}
+      POSTGRES_USER: ${POSTGRES_USER:-werk}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - werk-postgres-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+
+  werk-api:
+    build:
+      context: ./apps/api
+      args:
+        GO_VERSION: "1.26.1"
+    environment:
+      WERK_ENV: ${WERK_ENV:-development}
+      WERK_VERSION: ${WERK_VERSION:-0.1.0-dev}
+      WERK_HTTP_ADDR: :8080
+      WERK_DATABASE_URL: postgres://${POSTGRES_USER:-werk}:${POSTGRES_PASSWORD}@werk-postgres:5432/${POSTGRES_DB:-werk}?sslmode=disable
+    ports:
+      - "${WERK_API_PORT:-127.0.0.1:8080}:8080"
+    depends_on:
+      werk-postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/app/werk-api", "healthcheck"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+
+  werk-web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      args:
+        NODE_VERSION: "24.18.0"
+    environment:
+      NODE_ENV: production
+      HOSTNAME: 0.0.0.0
+      WERK_INTERNAL_API_URL: ${WERK_INTERNAL_API_URL:-http://werk-api:8080}
+    ports:
+      - "${WERK_WEB_PORT:-3000}:3000"
+    depends_on:
+      werk-api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1:3000/api/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  werk-postgres-data:

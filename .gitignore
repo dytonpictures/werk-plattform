@@ -1,0 +1,30 @@
+# Host-local user data (repository root is the development user's home)
+/.ssh/
+/.cache/
+/.bash_history
+/.bash_logout
+/.bashrc
+/.profile
+/.sudo_as_admin_successful
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Build and test output
+node_modules/
+.next/
+*.tsbuildinfo
+dist/
+coverage/
+*.out
+*.log
+/backups/
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
