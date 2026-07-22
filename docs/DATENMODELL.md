@@ -702,6 +702,21 @@ EventTypeRegistration
 
 ExtensionPointRegistration
   app_id, extension_point, contribution_type, configuration
+
+ServiceContract
+  service_key, owner_module, contract_version, lifecycle
+
+ServiceCapabilityContract
+  service_key, service_contract_version, capability_key,
+  capability_version, operation_boundary, lifecycle
+
+ProviderRegistration
+  id, service_key, service_contract_version, provider_key, adapter_key,
+  config_scope, tenant_id?, registry_contract_version, lifecycle, revision
+
+ProviderCapabilityBinding
+  provider_id, service_key, service_contract_version,
+  capability_key, capability_version, lifecycle, revision
 ```
 
 Der Core verwaltet Registrierung, tenantbezogene Aktivierung und explizite
@@ -719,6 +734,25 @@ Policyentscheidung wertet den `ProcessingContext` zusammen mit Actor,
 Permission, Ressource und Grants aus. Verwaltungs-API, Manifestprüfung,
 Routenvorlagen, Suchprojektionen, der erste Fachapp-Verbraucher und frei
 konfigurierbare Policy-Facts folgen. Änderungen vorbehalten.
+
+Die globale Service-/Provider-Registry ist ein deklarativer Metadatenkatalog
+für logische Dienste, erlaubte technische Capabilities, konkrete
+Providerinstanzen und deren ausdrückliche Bindungen. `ConfigScope` beschreibt,
+ob eine Providerkonfiguration installations- oder tenantgebunden ist;
+`operation_boundary` beschreibt unabhängig davon, ob die konkrete Operation
+einen Tenant-Kontext benötigt. Ein installationsweit konfigurierter Provider
+darf Tenantoperationen ausführen, ohne deren Tenant-Kontext aufzuheben.
+
+Die Auflösung verlangt immer eine konkrete Provider-ID und exakt passende
+Registry-, Dienst- und Capability-Vertragsversionen. Sie wählt keinen Provider
+automatisch und liefert eine gemeinsam an Provider, Adapter, Capability,
+Operationsgrenze und Tenant-Kontext gebundene Entscheidung. Die Registry
+enthält keine Secrets, Schlüssel, Zertifikate, Tokens, Endpunkte, Objektpfade,
+freie Providerkonfiguration oder Healthdaten und erteilt weder RBAC-Rechte noch
+Mehrinstanz-Schreibhoheit. Identity-Bindings und Storage-Locations bleiben bei
+ihren jeweiligen Core-Domänen. Den verbindlichen Vertrag beschreibt
+[`ADR-025`](adr/ADR-025-globale-service-und-provider-registry.md); Änderungen
+vorbehalten.
 
 ### 3.7 Geschäftsobjekte, Beziehungen und Entscheidungen
 

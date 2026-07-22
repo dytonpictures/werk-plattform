@@ -72,6 +72,12 @@ func TestOpenAPIContractDocumentsOperationalRoutesAndBoundaries(t *testing.T) {
 	if operations, ok := paths["/api/v1/workspace"].(map[string]any); !ok || operations["get"] == nil {
 		t.Error("OpenAPI contract does not document GET /api/v1/workspace")
 	}
+	for _, path := range []string{"/api/v1/documents", "/api/v1/documents/{documentId}"} {
+		operations, ok := paths[path].(map[string]any)
+		if !ok || operations["get"] == nil {
+			t.Errorf("OpenAPI contract does not document GET %s", path)
+		}
+	}
 	for _, path := range []string{"/admin/v1/tenants", "/admin/v1/tenants/{tenantId}/organizational-units"} {
 		operations, ok := paths[path].(map[string]any)
 		if !ok || operations["get"] == nil || operations["post"] == nil {

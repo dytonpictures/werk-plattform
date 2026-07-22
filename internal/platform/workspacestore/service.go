@@ -11,6 +11,10 @@ import (
 	"github.com/dytonpictures/werk/internal/platform/database"
 )
 
+const maxOrganizationalPathDepth = 64
+
+var errInvalidOrganizationalPath = errors.New("organizational path is cyclic or exceeds the supported depth")
+
 type Service struct {
 	database *database.WorkDB
 	now      func() time.Time
@@ -29,11 +33,11 @@ type OrganizationalUnitView struct {
 }
 
 type Overview struct {
-	Tenant             TenantView              `json:"tenant"`
-	OrganizationalUnit *OrganizationalUnitView `json:"organizational_unit,omitempty"`
+	Tenant             TenantView               `json:"tenant"`
+	OrganizationalUnit *OrganizationalUnitView  `json:"organizational_unit,omitempty"`
 	OrganizationalPath []OrganizationalUnitView `json:"organizational_path"`
-	MembershipType     string                  `json:"membership_type,omitempty"`
-	Permission         string                  `json:"permission"`
+	MembershipType     string                   `json:"membership_type,omitempty"`
+	Permission         string                   `json:"permission"`
 }
 
 func New(db *database.WorkDB) (*Service, error) {
@@ -63,6 +67,10 @@ func (service *Service) Overview(ctx context.Context, actor identity.Authenticat
 			LEFT JOIN LATERAL (
 			  SELECT candidate.organizational_unit_id, candidate.membership_type
 			  FROM werk_core.memberships AS candidate
+			  JOIN werk_core.organizational_units AS candidate_unit
+			    ON candidate_unit.id=candidate.organizational_unit_id
+			   AND candidate_unit.tenant_id=candidate.tenant_id
+			   AND candidate_unit.status='active'
 			  WHERE candidate.tenant_id=account.tenant_id AND candidate.party_id=party.id
 			    AND candidate.valid_from <= $3
 			    AND (candidate.valid_until IS NULL OR candidate.valid_until > $3)
@@ -71,6 +79,7 @@ func (service *Service) Overview(ctx context.Context, actor identity.Authenticat
 			) AS membership ON true
 			LEFT JOIN werk_core.organizational_units AS unit
 			  ON unit.id=membership.organizational_unit_id AND unit.tenant_id=account.tenant_id
+			 AND unit.status='active'
 			WHERE account.id=$1::uuid AND account.tenant_id=$2::uuid
 			  AND account.account_class='work' AND account.status='active'
 			  AND tenant.status='active' AND party.status='active'
@@ -88,27 +97,35 @@ func (service *Service) Overview(ctx context.Context, actor identity.Authenticat
 			view.OrganizationalUnit = &OrganizationalUnitView{ID: *unitID, Name: *unitName, UnitType: *unitType}
 			rows, err := tx.Query(ctx, `
 				WITH RECURSIVE lineage AS (
-				  SELECT unit.id, unit.parent_id, unit.name, unit.unit_type, 0 AS depth
+				  SELECT unit.id, unit.parent_id, unit.name, unit.unit_type, 0 AS depth,
+				         ARRAY[unit.id]::uuid[] AS visited, false AS cycle
 				  FROM werk_core.organizational_units AS unit
 				  WHERE unit.tenant_id=$1::uuid AND unit.id=$2::uuid AND unit.status='active'
 				  UNION ALL
-				  SELECT parent.id, parent.parent_id, parent.name, parent.unit_type, child.depth + 1
+				  SELECT parent.id, parent.parent_id, parent.name, parent.unit_type, child.depth + 1,
+				         child.visited || parent.id, parent.id=ANY(child.visited)
 				  FROM werk_core.organizational_units AS parent
 				  JOIN lineage AS child ON child.parent_id=parent.id
 				  WHERE parent.tenant_id=$1::uuid AND parent.status='active'
+				    AND NOT child.cycle AND cardinality(child.visited) < $3
 				)
-				SELECT id::text, name, unit_type
+				SELECT id::text, name, unit_type, cycle,
+				       cardinality(visited)=$3 AND parent_id IS NOT NULL AS truncated
 				FROM lineage
 				ORDER BY depth DESC
-			`, actor.TenantID.String(), *unitID)
+			`, actor.TenantID.String(), *unitID, maxOrganizationalPathDepth)
 			if err != nil {
 				return err
 			}
 			defer rows.Close()
 			for rows.Next() {
 				var item OrganizationalUnitView
-				if err := rows.Scan(&item.ID, &item.Name, &item.UnitType); err != nil {
+				var cycle, truncated bool
+				if err := rows.Scan(&item.ID, &item.Name, &item.UnitType, &cycle, &truncated); err != nil {
 					return err
+				}
+				if cycle || truncated {
+					return errInvalidOrganizationalPath
 				}
 				view.OrganizationalPath = append(view.OrganizationalPath, item)
 			}

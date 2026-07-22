@@ -41,10 +41,25 @@ func TestAdminTOTPFlowIntegration(t *testing.T) {
 	if err != nil || login.Redirect != "/change-password" || login.SessionToken == "" {
 		t.Fatalf("initial login = %#v, %v", login, err)
 	}
-	if err := service.ChangePasswordWithAudit(ctx, login.SessionToken, initialPassword, currentPassword, requestID, correlationID); err != nil {
-		t.Fatal(err)
+	parallelPasswordSession, err := service.LoginWithMFA(ctx, "mfa-integration@werk.local", initialPassword, requestID, correlationID)
+	if err != nil || parallelPasswordSession.SessionToken == "" {
+		t.Fatalf("parallel pre-password session = %#v, %v", parallelPasswordSession, err)
 	}
-	enrollment, err := service.StartTOTPEnrollment(ctx, login.SessionToken, currentPassword, "Integration Authenticator", requestID, correlationID)
+	stalePasswordLogin := loadIntegrationAccountRecord(t, ctx, service, "mfa-integration@werk.local")
+	passwordRotation, err := service.ChangePasswordWithAudit(ctx, login.SessionToken, initialPassword, currentPassword, requestID, correlationID)
+	if err != nil || passwordRotation.SessionToken == "" {
+		t.Fatalf("password rotation = %#v, %v", passwordRotation, err)
+	}
+	if _, err := service.Session(ctx, login.SessionToken); err == nil {
+		t.Fatal("pre-password-change session remained valid after rotation")
+	}
+	if _, err := service.Session(ctx, parallelPasswordSession.SessionToken); err == nil {
+		t.Fatal("parallel pre-password-change session remained valid after rotation")
+	}
+	if staleResult, err := service.issueLoginSession(ctx, stalePasswordLogin, identity.AssuranceSingleFactor, requestID, correlationID); err == nil || staleResult.SessionToken != "" {
+		t.Fatalf("stale password login published a session after rotation: %#v, %v", staleResult, err)
+	}
+	enrollment, err := service.StartTOTPEnrollment(ctx, passwordRotation.SessionToken, currentPassword, "Integration Authenticator", requestID, correlationID)
 	if err != nil || enrollment.Secret == "" || enrollment.FactorID == "" {
 		t.Fatalf("enrollment = %#v, %v", enrollment, err)
 	}
@@ -52,11 +67,25 @@ func TestAdminTOTPFlowIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	activation, err := service.ConfirmTOTPEnrollment(ctx, login.SessionToken, enrollment.FactorID, code, requestID, correlationID)
-	if err != nil || len(activation.RecoveryCodes) != recoveryCodeCount {
+	parallelEnrollmentSession, err := service.LoginWithMFA(ctx, "mfa-integration@werk.local", currentPassword, requestID, correlationID)
+	if err != nil || parallelEnrollmentSession.SessionToken == "" {
+		t.Fatalf("parallel pre-enrollment session = %#v, %v", parallelEnrollmentSession, err)
+	}
+	staleEnrollmentLogin := loadIntegrationAccountRecord(t, ctx, service, "mfa-integration@werk.local")
+	activation, err := service.ConfirmTOTPEnrollment(ctx, passwordRotation.SessionToken, enrollment.FactorID, code, requestID, correlationID)
+	if err != nil || len(activation.RecoveryCodes) != recoveryCodeCount || activation.Rotation.SessionToken == "" {
 		t.Fatalf("activation = %#v, %v", activation, err)
 	}
-	viewValue, err := service.Session(ctx, login.SessionToken)
+	if _, err := service.Session(ctx, passwordRotation.SessionToken); err == nil {
+		t.Fatal("pre-MFA session remained valid after assurance rotation")
+	}
+	if _, err := service.Session(ctx, parallelEnrollmentSession.SessionToken); err == nil {
+		t.Fatal("parallel pre-MFA session remained valid after assurance rotation")
+	}
+	if staleResult, err := service.issueLoginSession(ctx, staleEnrollmentLogin, identity.AssuranceSingleFactor, requestID, correlationID); err == nil || staleResult.SessionToken != "" {
+		t.Fatalf("stale no-factor login published a session after MFA activation: %#v, %v", staleResult, err)
+	}
+	viewValue, err := service.Session(ctx, activation.Rotation.SessionToken)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +93,7 @@ func TestAdminTOTPFlowIntegration(t *testing.T) {
 	if view.AuthenticationAssurance != identity.AssuranceMultiFactor || view.MFAEnrollmentRequired {
 		t.Fatalf("session assurance = %q, enrollment required = %v", view.AuthenticationAssurance, view.MFAEnrollmentRequired)
 	}
-	actor, err := service.ResolveActor(ctx, login.SessionToken, identity.AccessPlaneAdmin)
+	actor, err := service.ResolveActor(ctx, activation.Rotation.SessionToken, identity.AccessPlaneAdmin)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +112,7 @@ func TestAdminTOTPFlowIntegration(t *testing.T) {
 			t.Fatalf("bootstrap admin role permission %s denied: %v", permission, err)
 		}
 	}
-	if err := service.LogoutWithAudit(ctx, login.SessionToken, requestID, correlationID); err != nil {
+	if err := service.LogoutWithAudit(ctx, activation.Rotation.SessionToken, requestID, correlationID); err != nil {
 		t.Fatal(err)
 	}
 	challenge, err := service.LoginWithMFA(ctx, "mfa-integration@werk.local", currentPassword, requestID, correlationID)
@@ -98,6 +127,19 @@ func TestAdminTOTPFlowIntegration(t *testing.T) {
 		t.Fatal("used challenge and recovery code were accepted twice")
 	}
 	assertAuthenticationAuditEvents(t, ctx, correlationID)
+}
+
+func loadIntegrationAccountRecord(t *testing.T, ctx context.Context, service *Service, loginName string) accountRecord {
+	t.Helper()
+	var record accountRecord
+	if err := service.database.WithinRead(ctx, func(ctx context.Context, tx database.TenantTx) error {
+		var err error
+		record, err = loadAccountByLogin(ctx, tx, loginName, service.now())
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return record
 }
 
 func assertAuthenticationAuditEvents(t *testing.T, ctx context.Context, correlationID string) {
@@ -147,10 +189,14 @@ func assertAuthenticationAuditEvents(t *testing.T, ctx context.Context, correlat
 		"identity.password.changed.v1",
 		"identity.logout.succeeded.v1",
 		"identity.mfa.authentication-succeeded.v1",
+		"identity.session.rotated.v1",
 	} {
 		if counts[eventType] == 0 {
 			t.Errorf("missing security audit event %q; counts = %#v", eventType, counts)
 		}
+	}
+	if counts["identity.session.rotated.v1"] != 2 {
+		t.Errorf("session rotation audit count = %d, want 2", counts["identity.session.rotated.v1"])
 	}
 	var auditCount int
 	var queuedCount int

@@ -3,6 +3,16 @@ const notice = document.querySelector('[data-page-notice]');
 const logout = document.querySelector('[data-page-logout]');
 const passwordForm = document.querySelector('[data-password-form]');
 
+document.querySelectorAll('.skip-link[href^="#"]').forEach((link) => {
+  link.addEventListener('click', (event) => {
+    const target = document.querySelector(link.getAttribute('href'));
+    if (!target) return;
+    event.preventDefault();
+    target.scrollIntoView({ block: 'start' });
+    target.focus();
+  });
+});
+
 function csrfToken() {
   const prefix = 'werk_csrf=';
   const value = document.cookie.split(';').map((part) => part.trim()).find((part) => part.startsWith(prefix));
@@ -84,7 +94,7 @@ function renderGlobalNavigation(session) {
     { icon: 'Ü', label: 'Übersicht', href: '/app' },
     { icon: 'E', label: 'Inbox', disabled: true },
     { icon: 'A', label: 'Meine Aufgaben', disabled: true },
-    { icon: 'D', label: 'Dokumente', disabled: true },
+    { icon: 'D', label: 'Dokumente', href: '/documents' },
     { icon: 'P', label: 'Mein Profil', href: '/profile' },
   ];
   const currentPath = window.location.pathname;

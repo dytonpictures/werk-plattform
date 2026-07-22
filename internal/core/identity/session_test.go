@@ -1,6 +1,7 @@
 package identity
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 )
@@ -20,6 +21,27 @@ func TestResolveSessionRejectsWrongAudienceAndExpiredRecords(t *testing.T) {
 	record.ExpiresAt = now
 	if _, err := ResolveSession(record, AccessPlaneAdmin, now); err != ErrSessionExpired {
 		t.Fatalf("expired error = %v, want %v", err, ErrSessionExpired)
+	}
+}
+
+func TestSessionRotationValidatesAndNeverSerializesCredential(t *testing.T) {
+	now := time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC)
+	rotation := SessionRotation{SessionToken: "opaque-session-token", ExpiresAt: now.Add(time.Hour)}
+	if err := rotation.Validate(now); err != nil {
+		t.Fatalf("valid rotation rejected: %v", err)
+	}
+	encoded, err := json.Marshal(rotation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(encoded) != "{}" {
+		t.Fatalf("rotation serialized protected state: %s", encoded)
+	}
+	if err := (SessionRotation{ExpiresAt: now.Add(time.Hour)}).Validate(now); err != ErrSessionInvalid {
+		t.Fatalf("empty token error = %v, want %v", err, ErrSessionInvalid)
+	}
+	if err := (SessionRotation{SessionToken: "opaque", ExpiresAt: now}).Validate(now); err != ErrSessionInvalid {
+		t.Fatalf("expired rotation error = %v, want %v", err, ErrSessionInvalid)
 	}
 }
 

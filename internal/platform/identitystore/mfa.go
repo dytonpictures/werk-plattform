@@ -58,11 +58,27 @@ func (service *Service) beginAdminMFA(ctx context.Context, record accountRecord,
 	}
 	expiresAt := service.now().Add(mfaChallengeTTL)
 	err = service.database.WithinWrite(ctx, func(ctx context.Context, tx database.TenantTx) error {
+		var sessionGeneration int64
+		queryErr := tx.QueryRow(ctx, `
+			SELECT account.session_generation
+			FROM werk_core.accounts AS account
+			JOIN werk_core.identity_mfa_factors AS factor
+			  ON factor.account_id = account.id
+			WHERE account.id = $1::uuid AND account.status = 'active'
+			  AND factor.id = $2::uuid AND factor.status = 'active'
+			FOR UPDATE OF account, factor
+		`, formatUUID(record.actor.AccountID), factorID).Scan(&sessionGeneration)
+		if errors.Is(queryErr, pgx.ErrNoRows) || (queryErr == nil && sessionGeneration != record.sessionGeneration) {
+			return identity.ErrInvalidCredentials
+		}
+		if queryErr != nil {
+			return queryErr
+		}
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO werk_core.identity_mfa_challenges (
-				id, account_id, factor_id, purpose, challenge_hash, expires_at
-			) VALUES ($1::uuid, $2::uuid, $3::uuid, 'authentication', $4, $5)
-		`, challengeID, formatUUID(record.actor.AccountID), factorID, challengeHash[:], expiresAt); err != nil {
+				id, account_id, factor_id, purpose, challenge_hash, expires_at, session_generation
+			) VALUES ($1::uuid, $2::uuid, $3::uuid, 'authentication', $4, $5, $6)
+		`, challengeID, formatUUID(record.actor.AccountID), factorID, challengeHash[:], expiresAt, sessionGeneration); err != nil {
 			return err
 		}
 		if err := service.insertSecurityAudit(ctx, tx, "identity.login.second-factor-required.v1", "succeeded", formatUUID(record.actor.AccountID), "", requestID, correlationID, `{}`); err != nil {
@@ -71,7 +87,7 @@ func (service *Service) beginAdminMFA(ctx context.Context, record accountRecord,
 		return service.insertSecurityAudit(ctx, tx, "identity.mfa.challenge-issued.v1", "succeeded", formatUUID(record.actor.AccountID), "", requestID, correlationID, "{}")
 	})
 	if err != nil {
-		return identity.LoginResult{}, identity.ErrInvalidCredentials
+		return identity.LoginResult{}, err
 	}
 	return identity.LoginResult{ChallengeToken: challengeToken, Redirect: "/mfa", MFARequired: true}, nil
 }
@@ -79,6 +95,13 @@ func (service *Service) beginAdminMFA(ctx context.Context, record accountRecord,
 func (service *Service) StartTOTPEnrollment(ctx context.Context, sessionToken, currentPassword, displayName, requestID, correlationID string) (identity.TOTPEnrollment, error) {
 	if !service.mfaEnabled || strings.TrimSpace(displayName) == "" {
 		return identity.TOTPEnrollment{}, identity.ErrMFAInvalid
+	}
+	passwordSnapshot, err := service.loadSessionPasswordSnapshot(ctx, sessionToken, true)
+	if err != nil {
+		return identity.TOTPEnrollment{}, err
+	}
+	if !identity.VerifyPassword(passwordSnapshot.passwordHash, currentPassword) {
+		return identity.TOTPEnrollment{}, identity.ErrInvalidCredentials
 	}
 	secret, err := identity.NewTOTPSecret()
 	if err != nil {
@@ -91,7 +114,10 @@ func (service *Service) StartTOTPEnrollment(ctx context.Context, sessionToken, c
 	var loginName string
 	err = service.database.WithinWrite(ctx, func(ctx context.Context, tx database.TenantTx) error {
 		accountID, _, passwordHash, err := lockAdminSession(ctx, tx, sessionToken, service.now())
-		if err != nil || !identity.VerifyPassword(passwordHash, currentPassword) {
+		if err != nil {
+			return err
+		}
+		if accountID != passwordSnapshot.accountID || !samePasswordHash(passwordHash, passwordSnapshot.passwordHash) {
 			return identity.ErrInvalidCredentials
 		}
 		var activeCount int
@@ -100,7 +126,10 @@ func (service *Service) StartTOTPEnrollment(ctx context.Context, sessionToken, c
 			       (SELECT count(*) FROM werk_core.identity_mfa_factors
 			        WHERE account_id = account.id AND factor_kind = 'totp' AND status = 'active')
 			FROM werk_core.accounts AS account WHERE id = $1::uuid
-		`, accountID).Scan(&loginName, &activeCount); err != nil || activeCount != 0 {
+		`, accountID).Scan(&loginName, &activeCount); err != nil {
+			return err
+		}
+		if activeCount != 0 {
 			return identity.ErrMFAInvalid
 		}
 		encrypted, err := service.encryptMFASecret(accountID, factorID, secret)
@@ -136,9 +165,13 @@ func (service *Service) ConfirmTOTPEnrollment(ctx context.Context, sessionToken,
 	if !service.mfaEnabled || factorID == "" {
 		return identity.TOTPActivation{}, identity.ErrMFAInvalid
 	}
+	rotation, err := service.prepareSessionRotation()
+	if err != nil {
+		return identity.TOTPActivation{}, err
+	}
 	var recoveryCodes []string
 	verificationFailed := false
-	err := service.database.WithinWrite(ctx, func(ctx context.Context, tx database.TenantTx) error {
+	err = service.database.WithinWrite(ctx, func(ctx context.Context, tx database.TenantTx) error {
 		accountID, sessionID, _, err := lockAdminSession(ctx, tx, sessionToken, service.now())
 		if err != nil {
 			return err
@@ -150,7 +183,10 @@ func (service *Service) ConfirmTOTPEnrollment(ctx context.Context, sessionToken,
 			WHERE id = $1::uuid AND account_id = $2::uuid AND factor_kind = 'totp' AND status = 'pending'
 			FOR UPDATE
 		`, factorID, accountID).Scan(&encrypted, &failedAttempts); err != nil {
-			return identity.ErrMFAInvalid
+			if errors.Is(err, pgx.ErrNoRows) {
+				return identity.ErrMFAInvalid
+			}
+			return err
 		}
 		secret, err := service.decryptMFASecret(accountID, factorID, encrypted)
 		if err != nil {
@@ -187,17 +223,22 @@ func (service *Service) ConfirmTOTPEnrollment(ctx context.Context, sessionToken,
 				return err
 			}
 		}
-		if _, err := tx.Exec(ctx, `
+		command, err := tx.Exec(ctx, `
 			UPDATE werk_core.identity_mfa_factors
 			SET status = 'active', activated_at = $3, last_used_at = $3
 			WHERE id = $1::uuid AND account_id = $2::uuid AND status = 'pending'
-		`, factorID, accountID, service.now()); err != nil {
+		`, factorID, accountID, service.now())
+		if err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, `
-			UPDATE werk_core.sessions SET authentication_assurance = 'multi-factor'
-			WHERE id = $1::uuid AND account_id = $2::uuid
-		`, sessionID, accountID); err != nil {
+		if command.RowsAffected() != 1 {
+			return identity.ErrMFAInvalid
+		}
+		if err := service.rotateAccountSessions(ctx, tx, sessionRotationSubject{
+			accountID: accountID, previousSessionID: sessionID,
+			audience: identity.AudienceAdmin, assurance: identity.AssuranceMultiFactor,
+			kind: identity.AuthenticationInteractive,
+		}, rotation, sessionRotationMFAEnrollment, requestID, correlationID); err != nil {
 			return err
 		}
 		return service.insertSecurityAudit(ctx, tx, "identity.mfa.enrollment-completed.v1", "succeeded", accountID, sessionID, requestID, correlationID, "{}")
@@ -208,7 +249,7 @@ func (service *Service) ConfirmTOTPEnrollment(ctx context.Context, sessionToken,
 	if verificationFailed {
 		return identity.TOTPActivation{}, identity.ErrMFAInvalid
 	}
-	return identity.TOTPActivation{RecoveryCodes: recoveryCodes}, nil
+	return identity.TOTPActivation{RecoveryCodes: recoveryCodes, Rotation: rotation.result}, nil
 }
 
 func (service *Service) CompleteMFAChallenge(ctx context.Context, challengeToken, code, requestID, correlationID string) (identity.LoginResult, error) {
@@ -230,21 +271,50 @@ func (service *Service) CompleteMFAChallenge(ctx context.Context, challengeToken
 		var challengeID, accountID, factorID, encrypted, loginName, audience string
 		var mustChangePassword bool
 		var failedAttempts int
+		var sessionGeneration int64
 		var expiresAt time.Time
 		if err := tx.QueryRow(ctx, `
+			SELECT account_id::text
+			FROM werk_core.identity_mfa_challenges
+			WHERE challenge_hash = $1 AND purpose = 'authentication' AND used_at IS NULL
+		`, challengeHash[:]).Scan(&accountID); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return identity.ErrMFAInvalid
+			}
+			return err
+		}
+		if err := tx.QueryRow(ctx, `
+			SELECT session_generation
+			FROM werk_core.accounts
+			WHERE id = $1::uuid AND status = 'active' AND account_class = 'admin'
+			FOR UPDATE
+		`, accountID).Scan(&sessionGeneration); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return identity.ErrMFAInvalid
+			}
+			return err
+		}
+		err := tx.QueryRow(ctx, `
 			SELECT challenge.id::text, account.id::text, factor.id::text,
 			       factor.secret_reference, account.login_name, account.must_change_password,
 			       $2::text,
-			       challenge.expires_at, challenge.failed_attempts
+			       challenge.expires_at, challenge.failed_attempts, challenge.session_generation
 			FROM werk_core.identity_mfa_challenges AS challenge
 			JOIN werk_core.accounts AS account ON account.id = challenge.account_id
 			JOIN werk_core.identity_mfa_factors AS factor ON factor.id = challenge.factor_id
 			WHERE challenge.challenge_hash = $1 AND challenge.purpose = 'authentication'
 			  AND challenge.used_at IS NULL AND account.account_class = 'admin'
 			  AND account.status = 'active' AND factor.status = 'active'
+			  AND account.id = $3::uuid
+			  AND challenge.session_generation = account.session_generation
+			  AND challenge.session_generation = $4
 			FOR UPDATE OF challenge, factor
-		`, challengeHash[:], identity.AudienceAdmin).Scan(&challengeID, &accountID, &factorID, &encrypted, &loginName, &mustChangePassword, &audience, &expiresAt, &failedAttempts); err != nil || !service.now().Before(expiresAt) {
+		`, challengeHash[:], identity.AudienceAdmin, accountID, sessionGeneration).Scan(&challengeID, &accountID, &factorID, &encrypted, &loginName, &mustChangePassword, &audience, &expiresAt, &failedAttempts, &sessionGeneration)
+		if errors.Is(err, pgx.ErrNoRows) || (err == nil && !service.now().Before(expiresAt)) {
 			return identity.ErrMFAInvalid
+		}
+		if err != nil {
+			return err
 		}
 		if mustChangePassword {
 			redirect = "/change-password"
@@ -284,9 +354,9 @@ func (service *Service) CompleteMFAChallenge(ctx context.Context, challengeToken
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO werk_core.sessions (
 				id, account_id, token_hash, audience, expires_at,
-				authentication_assurance, authentication_kind
-			) VALUES ($1::uuid, $2::uuid, $3, $4, $5, 'multi-factor', 'interactive')
-		`, sessionID, accountID, sessionHash[:], audience, service.now().Add(sessionTTL)); err != nil {
+				authentication_assurance, authentication_kind, session_generation
+			) VALUES ($1::uuid, $2::uuid, $3, $4, $5, 'multi-factor', 'interactive', $6)
+		`, sessionID, accountID, sessionHash[:], audience, service.now().Add(sessionTTL), sessionGeneration); err != nil {
 			return err
 		}
 		if err := service.insertSecurityAudit(ctx, tx, "identity.mfa.authentication-succeeded.v1", "succeeded", accountID, sessionID, requestID, correlationID, "{}"); err != nil {
@@ -295,7 +365,7 @@ func (service *Service) CompleteMFAChallenge(ctx context.Context, challengeToken
 		return service.insertSecurityAudit(ctx, tx, "identity.login.succeeded.v1", "succeeded", accountID, sessionID, requestID, correlationID, `{"authentication_assurance":"multi-factor","audience":"admin"}`)
 	})
 	if err != nil {
-		return identity.LoginResult{}, identity.ErrInvalidCredentials
+		return identity.LoginResult{}, err
 	}
 	if verificationFailed {
 		return identity.LoginResult{}, identity.ErrInvalidCredentials
@@ -308,6 +378,32 @@ func lockAdminSession(ctx context.Context, tx database.TenantTx, token string, n
 		return "", "", nil, identity.ErrSessionInvalid
 	}
 	hash := sha256.Sum256([]byte(token))
+	if err := tx.QueryRow(ctx, `
+		SELECT session.account_id::text
+		FROM werk_core.sessions AS session
+		JOIN werk_core.accounts AS account ON account.id = session.account_id
+		WHERE session.token_hash = $1 AND session.revoked_at IS NULL
+		  AND session.expires_at > $2 AND account.status = 'active'
+		  AND session.session_generation = account.session_generation
+		  AND account.account_class = 'admin' AND session.audience = $3
+	`, hash[:], now, identity.AudienceAdmin).Scan(&accountID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", "", nil, identity.ErrSessionInvalid
+		}
+		return "", "", nil, err
+	}
+	var sessionGeneration int64
+	if err := tx.QueryRow(ctx, `
+		SELECT session_generation
+		FROM werk_core.accounts
+		WHERE id = $1::uuid AND status = 'active' AND account_class = 'admin'
+		FOR UPDATE
+	`, accountID).Scan(&sessionGeneration); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", "", nil, identity.ErrSessionInvalid
+		}
+		return "", "", nil, err
+	}
 	err = tx.QueryRow(ctx, `
 		SELECT account.id::text, session.id::text, credential.secret_hash
 		FROM werk_core.sessions AS session
@@ -319,11 +415,16 @@ func lockAdminSession(ctx context.Context, tx database.TenantTx, token string, n
 		 AND (credential.expires_at IS NULL OR credential.expires_at > $2)
 		WHERE session.token_hash = $1 AND session.revoked_at IS NULL
 		  AND session.expires_at > $2 AND account.status = 'active'
+		  AND session.session_generation = account.session_generation
 		  AND account.account_class = 'admin' AND session.audience = $3
-		FOR UPDATE OF session, account, credential
-	`, hash[:], now, identity.AudienceAdmin).Scan(&accountID, &sessionID, &passwordHash)
-	if err != nil {
+		  AND account.id = $4::uuid AND session.session_generation = $5
+		FOR UPDATE OF session, credential
+	`, hash[:], now, identity.AudienceAdmin, accountID, sessionGeneration).Scan(&accountID, &sessionID, &passwordHash)
+	if errors.Is(err, pgx.ErrNoRows) {
 		return "", "", nil, identity.ErrSessionInvalid
+	}
+	if err != nil {
+		return "", "", nil, err
 	}
 	return accountID, sessionID, passwordHash, nil
 }

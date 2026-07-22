@@ -1,6 +1,7 @@
 package migrate
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -17,6 +18,28 @@ func TestEmbeddedMigrationsAreOrdered(t *testing.T) {
 		if migrations[index-1].name >= migrations[index].name {
 			t.Fatalf("migrations are not strictly ordered: %q before %q", migrations[index-1].name, migrations[index].name)
 		}
+	}
+}
+
+func TestEmbeddedMigrationsHaveUniqueNumericVersions(t *testing.T) {
+	migrations, err := loadMigrations()
+	if err != nil {
+		t.Fatalf("load migrations: %v", err)
+	}
+	seen := make(map[uint64]string, len(migrations))
+	for _, migration := range migrations {
+		versionText, _, found := strings.Cut(migration.name, "_")
+		if !found || len(versionText) != 6 {
+			t.Fatalf("migration %q has no six-digit numeric version", migration.name)
+		}
+		version, err := strconv.ParseUint(versionText, 10, 64)
+		if err != nil || version == 0 {
+			t.Fatalf("migration %q has invalid version %q", migration.name, versionText)
+		}
+		if existing, duplicate := seen[version]; duplicate {
+			t.Fatalf("migration version %06d is shared by %q and %q", version, existing, migration.name)
+		}
+		seen[version] = migration.name
 	}
 }
 
@@ -334,6 +357,36 @@ func TestDocumentStorageFoundationIsTenantBoundAndInactive(t *testing.T) {
 	t.Fatal("document/storage foundation migration is not embedded")
 }
 
+func TestDocumentReadContractUsesCollectionPermissionWithoutStorageAccess(t *testing.T) {
+	migrations, err := loadMigrations()
+	if err != nil {
+		t.Fatalf("load migrations: %v", err)
+	}
+	for _, migration := range migrations {
+		if migration.name != "000032_document_read_contract.sql" {
+			continue
+		}
+		for _, fragment := range []string{
+			"core.documents.document.list",
+			"core.documents.collection",
+			"core.documents.document-use",
+			"created-by-me visibility rule",
+			"idx_documents_tenant_creator_updated",
+		} {
+			if !strings.Contains(migration.contents, fragment) {
+				t.Errorf("document read migration is missing %q", fragment)
+			}
+		}
+		for _, forbidden := range []string{"storage_blobs", "storage_blob_locations", "GRANT SELECT"} {
+			if strings.Contains(migration.contents, forbidden) {
+				t.Errorf("document read contract unexpectedly widens storage access with %q", forbidden)
+			}
+		}
+		return
+	}
+	t.Fatal("document read contract migration is not embedded")
+}
+
 func TestBusinessAuditContractKeepsDualActorsAndServerPolicy(t *testing.T) {
 	migrations, err := loadMigrations()
 	if err != nil {
@@ -379,4 +432,92 @@ func TestBusinessAuditContractKeepsDualActorsAndServerPolicy(t *testing.T) {
 		return
 	}
 	t.Fatal("business audit migration is not embedded")
+}
+
+func TestIdentitySessionGenerationFailsClosedAcrossSecurityChanges(t *testing.T) {
+	migrations, err := loadMigrations()
+	if err != nil {
+		t.Fatalf("load migrations: %v", err)
+	}
+	for _, migration := range migrations {
+		if migration.name != "000031_identity_session_generation.sql" {
+			continue
+		}
+		for _, fragment := range []string{
+			"ADD COLUMN session_generation bigint NOT NULL DEFAULT 1",
+			"ALTER COLUMN session_generation DROP DEFAULT",
+			"CREATE FUNCTION werk_security.validate_session_generation()",
+			"NEW.session_generation <> current_generation",
+			"CREATE TRIGGER sessions_validate_generation",
+			"CREATE TRIGGER identity_mfa_challenges_validate_generation",
+			"REVOKE ALL ON FUNCTION werk_security.validate_session_generation() FROM PUBLIC",
+			"CREATE FUNCTION werk_security.protect_account_session_generation()",
+			"NEW.session_generation < OLD.session_generation",
+			"CREATE TRIGGER accounts_protect_session_generation",
+		} {
+			if !strings.Contains(migration.contents, fragment) {
+				t.Errorf("identity session generation migration is missing %q", fragment)
+			}
+		}
+		if count := strings.Count(migration.contents, "ALTER COLUMN session_generation DROP DEFAULT"); count != 2 {
+			t.Errorf("identity session generation migration drops %d unsafe defaults, want 2", count)
+		}
+		return
+	}
+	t.Fatal("identity session generation migration is not embedded")
+}
+
+func TestPlatformServiceProviderRegistryKeepsMetadataAndRuntimeAuthoritySeparate(t *testing.T) {
+	migrations, err := loadMigrations()
+	if err != nil {
+		t.Fatalf("load migrations: %v", err)
+	}
+	for _, migration := range migrations {
+		if migration.name != "000033_platform_service_provider_registry.sql" {
+			continue
+		}
+		for _, fragment := range []string{
+			"CREATE TABLE werk_core.platform_service_contracts",
+			"CREATE TABLE werk_core.platform_service_capability_contracts",
+			"CREATE TABLE werk_core.platform_provider_registrations",
+			"CREATE TABLE werk_core.platform_provider_capability_bindings",
+			"CHECK (service_key LIKE owner_module || '.service.%')",
+			"CHECK (capability_key LIKE service_key || '.capability.%')",
+			"CHECK (provider_key LIKE service_key || '.provider.%')",
+			"UNIQUE NULLS NOT DISTINCT",
+			"config_scope = 'installation' AND tenant_id IS NULL",
+			"config_scope = 'tenant' AND tenant_id IS NOT NULL",
+			"lifecycle text NOT NULL DEFAULT 'disabled'",
+			"retired provider registry entries cannot be reactivated",
+			"OLD.registry_contract_version <> NEW.registry_contract_version",
+			"OLD.created_at IS DISTINCT FROM NEW.created_at",
+			"tenant-scoped provider cannot implement an installation-bound capability",
+			"platform_provider_capability_bindings_validate_scope",
+			"provider registry revision must increase by one",
+			"provider registry entries must be retired, not deleted",
+			"ALTER TABLE werk_core.platform_provider_registrations FORCE ROW LEVEL SECURITY",
+			"TO werk_admin_runtime, werk_backup_reader",
+		} {
+			if !strings.Contains(migration.contents, fragment) {
+				t.Errorf("service/provider registry migration is missing %q", fragment)
+			}
+		}
+		if count := strings.Count(migration.contents, "CREATE TABLE werk_core.platform_"); count != 4 {
+			t.Errorf("service/provider registry creates %d platform tables, want 4", count)
+		}
+		if count := strings.Count(migration.contents, "OLD.created_at IS DISTINCT FROM NEW.created_at"); count != 4 {
+			t.Errorf("service/provider registry protects created_at in %d tables, want 4", count)
+		}
+		for _, forbidden := range []string{
+			"secret_value", "credential_value", "endpoint_url", "configuration jsonb",
+			"health_status", "bucket_name", "object_path",
+			"INSERT INTO werk_core.platform_provider_registrations",
+		} {
+			if strings.Contains(migration.contents, forbidden) {
+				t.Errorf("service/provider registry contains forbidden runtime/configuration state %q", forbidden)
+			}
+		}
+		return
+	}
+	t.Fatal("service/provider registry migration is not embedded")
 }

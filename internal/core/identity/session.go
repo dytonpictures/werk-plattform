@@ -16,6 +16,24 @@ type SessionID [16]byte
 
 func (id SessionID) IsZero() bool { return id == SessionID{} }
 
+// SessionRotation is the opaque replacement credential created after a
+// security-relevant elevation or credential change. Adapters must transport
+// the token through a protected channel and must never serialize it into a
+// response body or persist it in plaintext.
+type SessionRotation struct {
+	SessionToken string    `json:"-"`
+	ExpiresAt    time.Time `json:"-"`
+}
+
+// Validate ensures callers fail closed instead of installing an empty or
+// already expired replacement credential.
+func (rotation SessionRotation) Validate(now time.Time) error {
+	if rotation.SessionToken == "" || rotation.ExpiresAt.IsZero() || !now.Before(rotation.ExpiresAt) {
+		return ErrSessionInvalid
+	}
+	return nil
+}
+
 // SessionRecord is the server-side result of looking up a hashed session token.
 // The token itself is never retained in this structure or returned to clients.
 type SessionRecord struct {

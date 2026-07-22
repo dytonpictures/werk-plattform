@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/dytonpictures/werk/internal/core/identity"
@@ -107,6 +108,7 @@ type accountRecord struct {
 	secretHash         []byte
 	rehashedSecret     []byte
 	mustChangePassword bool
+	sessionGeneration  int64
 }
 
 func New(database *database.IdentityDB, options ...Option) (*Service, error) {
@@ -294,6 +296,15 @@ func (service *Service) issueLoginSession(ctx context.Context, record accountRec
 	}
 	expiresAt := service.now().Add(sessionTTL)
 	err = service.database.WithinWrite(ctx, func(ctx context.Context, tx database.TenantTx) error {
+		var currentGeneration int64
+		if err := tx.QueryRow(ctx, `
+			SELECT session_generation
+			FROM werk_core.accounts
+			WHERE id = $1::uuid AND status = 'active'
+			FOR UPDATE
+		`, formatUUID(record.actor.AccountID)).Scan(&currentGeneration); err != nil || currentGeneration != record.sessionGeneration {
+			return identity.ErrInvalidCredentials
+		}
 		if len(record.rehashedSecret) != 0 {
 			command, err := tx.Exec(ctx, `
 				UPDATE werk_core.account_credentials
@@ -307,12 +318,12 @@ func (service *Service) issueLoginSession(ctx context.Context, record accountRec
 		command, err := tx.Exec(ctx, `
 			INSERT INTO werk_core.sessions (
 				id, account_id, token_hash, audience, tenant_id, expires_at,
-				authentication_assurance, authentication_kind
+				authentication_assurance, authentication_kind, session_generation
 			)
-			SELECT $1::uuid, id, $2, $3, tenant_id, $4, $6, $7
+			SELECT $1::uuid, id, $2, $3, tenant_id, $4, $6, $7, session_generation
 			FROM werk_core.accounts
-			WHERE id = $5::uuid AND status = 'active'
-		`, sessionID, tokenHash[:], record.actor.Audience, expiresAt, formatUUID(record.actor.AccountID), assurance, record.actor.Kind)
+			WHERE id = $5::uuid AND status = 'active' AND session_generation = $8
+		`, sessionID, tokenHash[:], record.actor.Audience, expiresAt, formatUUID(record.actor.AccountID), assurance, record.actor.Kind, record.sessionGeneration)
 		if err != nil || command.RowsAffected() != 1 {
 			return identity.ErrInvalidCredentials
 		}
@@ -366,6 +377,7 @@ func (service *Service) Session(ctx context.Context, token string) (any, error) 
 			LEFT JOIN werk_core.account_ui_preferences AS preference ON preference.account_id = account.id
 			WHERE session.token_hash = $1 AND session.revoked_at IS NULL
 			  AND session.expires_at > $2 AND account.status = 'active'
+			  AND session.session_generation = account.session_generation
 		`, tokenHash[:], service.now()).Scan(
 			&sessionID, &accountID, &accountClass, &audience, &authenticationKind, &tenantID, &view.Profile.LoginName,
 			&view.Profile.DisplayName, &view.MustChangePassword, &view.AuthenticationAssurance, &view.ExpiresAt,
@@ -421,6 +433,7 @@ func (service *Service) UpdateNavigationPreference(ctx context.Context, token, m
 			JOIN werk_core.accounts AS account ON account.id = session.account_id
 			WHERE session.token_hash = $1 AND session.revoked_at IS NULL
 			  AND session.expires_at > $2 AND account.status = 'active'
+			  AND session.session_generation = account.session_generation
 		`, tokenHash[:], service.now()).Scan(&accountID, &sessionID, &tenantID); err != nil {
 			return identity.ErrSessionInvalid
 		}
@@ -466,11 +479,34 @@ func (service *Service) LogoutWithAudit(ctx context.Context, token, requestID, c
 		var sessionID [16]byte
 		var tenantID pgtype.UUID
 		if err := tx.QueryRow(ctx, `
-			SELECT account_id, id, tenant_id
-			FROM werk_core.sessions
-			WHERE token_hash = $1 AND revoked_at IS NULL AND expires_at > $2
+			SELECT account.id
+			FROM werk_core.sessions AS session
+			JOIN werk_core.accounts AS account ON account.id = session.account_id
+			WHERE session.token_hash = $1 AND session.revoked_at IS NULL
+			  AND session.expires_at > $2
+			  AND session.session_generation = account.session_generation
+		`, tokenHash[:], service.now()).Scan(&accountID); err != nil {
+			return identity.ErrSessionInvalid
+		}
+		var sessionGeneration int64
+		if err := tx.QueryRow(ctx, `
+			SELECT session_generation
+			FROM werk_core.accounts
+			WHERE id = $1::uuid AND status = 'active'
 			FOR UPDATE
-		`, tokenHash[:], service.now()).Scan(&accountID, &sessionID, &tenantID); err != nil {
+		`, formatUUID(accountID)).Scan(&sessionGeneration); err != nil {
+			return identity.ErrSessionInvalid
+		}
+		if err := tx.QueryRow(ctx, `
+			SELECT session.id, session.tenant_id
+			FROM werk_core.sessions AS session
+			JOIN werk_core.accounts AS account ON account.id = session.account_id
+			WHERE session.token_hash = $1 AND session.revoked_at IS NULL
+			  AND session.expires_at > $2
+			  AND session.session_generation = account.session_generation
+			  AND account.id = $3::uuid AND session.session_generation = $4
+			FOR UPDATE OF session
+		`, tokenHash[:], service.now(), formatUUID(accountID), sessionGeneration).Scan(&sessionID, &tenantID); err != nil {
 			return identity.ErrSessionInvalid
 		}
 		command, err := tx.Exec(ctx, `
@@ -488,27 +524,55 @@ func (service *Service) LogoutWithAudit(ctx context.Context, token, requestID, c
 	})
 }
 
-func (service *Service) ChangePassword(ctx context.Context, token, currentPassword, newPassword string) error {
+func (service *Service) ChangePassword(ctx context.Context, token, currentPassword, newPassword string) (identity.SessionRotation, error) {
 	requestID, _ := randomUUID()
 	correlationID, _ := randomUUID()
 	return service.ChangePasswordWithAudit(ctx, token, currentPassword, newPassword, requestID, correlationID)
 }
 
-func (service *Service) ChangePasswordWithAudit(ctx context.Context, token, currentPassword, newPassword, requestID, correlationID string) error {
+func (service *Service) ChangePasswordWithAudit(ctx context.Context, token, currentPassword, newPassword, requestID, correlationID string) (identity.SessionRotation, error) {
+	passwordSnapshot, err := service.loadSessionPasswordSnapshot(ctx, token, false)
+	if err != nil {
+		return identity.SessionRotation{}, err
+	}
+	if !identity.VerifyPassword(passwordSnapshot.passwordHash, currentPassword) {
+		_ = service.auditSecurityEvent(ctx, "identity.password.change-denied.v1", "denied", passwordSnapshot.accountID, passwordSnapshot.tenantID, requestID, correlationID, `{"reason":"invalid-current-password"}`)
+		return identity.SessionRotation{}, identity.ErrInvalidCredentials
+	}
 	newHash, err := identity.HashPassword(newPassword)
-	if err != nil || token == "" {
-		return identity.ErrInvalidCredentials
+	if err != nil {
+		return identity.SessionRotation{}, identity.ErrInvalidCredentials
+	}
+	rotation, err := service.prepareSessionRotation()
+	if err != nil {
+		return identity.SessionRotation{}, err
 	}
 	tokenHash := sha256.Sum256([]byte(token))
-	var deniedAccountID string
-	var deniedTenantID string
 	err = service.database.WithinWrite(ctx, func(ctx context.Context, tx database.TenantTx) error {
 		var accountID [16]byte
 		var sessionID [16]byte
 		var tenantID pgtype.UUID
 		var currentHash []byte
+		var audience identity.Audience
+		var assurance identity.AuthenticationAssurance
+		var authenticationKind identity.AuthenticationKind
+		var sourceExpiresAt time.Time
+		var sessionGeneration int64
 		if err := tx.QueryRow(ctx, `
-			SELECT account.id, session.id, session.tenant_id, credential.secret_hash
+			SELECT session_generation
+			FROM werk_core.accounts
+			WHERE id = $1::uuid AND status = 'active'
+			FOR UPDATE
+		`, passwordSnapshot.accountID).Scan(&sessionGeneration); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return identity.ErrInvalidCredentials
+			}
+			return err
+		}
+		if err := tx.QueryRow(ctx, `
+			SELECT account.id, session.id, session.tenant_id, credential.secret_hash,
+			       session.audience, session.authentication_assurance, session.authentication_kind,
+			       session.expires_at
 			FROM werk_core.sessions AS session
 			JOIN werk_core.accounts AS account ON account.id = session.account_id
 			JOIN werk_core.account_credentials AS credential
@@ -518,46 +582,68 @@ func (service *Service) ChangePasswordWithAudit(ctx context.Context, token, curr
 			 AND (credential.expires_at IS NULL OR credential.expires_at > $2)
 			WHERE session.token_hash = $1 AND session.revoked_at IS NULL
 			  AND session.expires_at > $2 AND account.status = 'active'
-			FOR UPDATE OF account, credential
-		`, tokenHash[:], service.now()).Scan(&accountID, &sessionID, &tenantID, &currentHash); err != nil {
-			return identity.ErrInvalidCredentials
-		}
-		if !identity.VerifyPassword(currentHash, currentPassword) {
-			deniedAccountID = formatUUID(accountID)
-			if tenantID.Valid {
-				deniedTenantID = formatUUID(tenantID.Bytes)
+			  AND session.session_generation = account.session_generation
+			  AND account.id = $3::uuid AND session.session_generation = $4
+			FOR UPDATE OF session, credential
+		`, tokenHash[:], service.now(), passwordSnapshot.accountID, sessionGeneration).Scan(
+			&accountID, &sessionID, &tenantID, &currentHash,
+			&audience, &assurance, &authenticationKind, &sourceExpiresAt,
+		); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return identity.ErrInvalidCredentials
 			}
-			return identity.ErrInvalidCredentials
-		}
-		if _, err := tx.Exec(ctx, `
-			UPDATE werk_core.account_credentials SET secret_hash = $2, changed_at = $3
-			WHERE account_id = $1::uuid AND credential_kind = 'password' AND status = 'active'
-		`, formatUUID(accountID), newHash, service.now()); err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, `
+		if formatUUID(accountID) != passwordSnapshot.accountID || !samePasswordHash(currentHash, passwordSnapshot.passwordHash) {
+			return identity.ErrInvalidCredentials
+		}
+		if err := rotation.limitExpiresAt(sourceExpiresAt); err != nil {
+			return identity.ErrSessionInvalid
+		}
+		command, err := tx.Exec(ctx, `
+			UPDATE werk_core.account_credentials SET secret_hash = $2, changed_at = $3
+			WHERE account_id = $1::uuid AND credential_kind = 'password' AND status = 'active'
+		`, formatUUID(accountID), newHash, rotation.createdAt)
+		if err != nil {
+			return err
+		}
+		if command.RowsAffected() != 1 {
+			return identity.ErrInvalidCredentials
+		}
+		command, err = tx.Exec(ctx, `
 			UPDATE werk_core.accounts
 			SET must_change_password = false, updated_at = $2, version = version + 1
 			WHERE id = $1::uuid
-		`, formatUUID(accountID), service.now()); err != nil {
+		`, formatUUID(accountID), rotation.createdAt)
+		if err != nil {
 			return err
 		}
+		if command.RowsAffected() != 1 {
+			return identity.ErrInvalidCredentials
+		}
 		if _, err := tx.Exec(ctx, `
-			UPDATE werk_core.sessions SET revoked_at = $2
-			WHERE account_id = $1::uuid AND token_hash <> $3 AND revoked_at IS NULL
-		`, formatUUID(accountID), service.now(), tokenHash[:]); err != nil {
+			UPDATE werk_core.identity_mfa_challenges
+			SET used_at = $2
+			WHERE account_id = $1::uuid AND used_at IS NULL
+		`, formatUUID(accountID), rotation.createdAt); err != nil {
 			return err
 		}
 		tenant := ""
 		if tenantID.Valid {
 			tenant = formatUUID(tenantID.Bytes)
 		}
+		if err := service.rotateAccountSessions(ctx, tx, sessionRotationSubject{
+			accountID: formatUUID(accountID), previousSessionID: formatUUID(sessionID), tenantID: tenant,
+			audience: audience, assurance: assurance, kind: authenticationKind,
+		}, rotation, sessionRotationPasswordChange, requestID, correlationID); err != nil {
+			return err
+		}
 		return service.insertSecurityAuditForTenant(ctx, tx, "identity.password.changed.v1", "succeeded", formatUUID(accountID), formatUUID(sessionID), tenant, requestID, correlationID, `{}`)
 	})
-	if err != nil && deniedAccountID != "" {
-		_ = service.auditSecurityEvent(ctx, "identity.password.change-denied.v1", "denied", deniedAccountID, deniedTenantID, requestID, correlationID, `{"reason":"invalid-current-password"}`)
+	if err != nil {
+		return identity.SessionRotation{}, err
 	}
-	return err
+	return rotation.result, nil
 }
 
 func loadAccountByLogin(ctx context.Context, tx database.TenantTx, loginName string, now time.Time) (accountRecord, error) {
@@ -570,13 +656,13 @@ func loadAccountByLogin(ctx context.Context, tx database.TenantTx, loginName str
 	err := tx.QueryRow(ctx, `
 		SELECT account.id, account.account_class, account.status, account.tenant_id,
 		       account.must_change_password, credential.id::text,
-		       credential.assurance, credential.secret_hash
+		       credential.assurance, credential.secret_hash, account.session_generation
 		FROM werk_core.accounts AS account
 		JOIN werk_core.account_credentials AS credential ON credential.account_id = account.id
 		WHERE account.login_name = $1 AND credential.credential_kind = 'password'
 		  AND credential.status = 'active'
 		  AND (credential.expires_at IS NULL OR credential.expires_at > $2)
-	`, loginName, now).Scan(&accountID, &accountClass, &status, &tenantID, &record.mustChangePassword, &record.credentialID, &assurance, &record.secretHash)
+	`, loginName, now).Scan(&accountID, &accountClass, &status, &tenantID, &record.mustChangePassword, &record.credentialID, &assurance, &record.secretHash, &record.sessionGeneration)
 	if err != nil || status != "active" {
 		return accountRecord{}, identity.ErrInvalidCredentials
 	}

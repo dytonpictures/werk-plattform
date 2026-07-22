@@ -292,6 +292,8 @@ docker compose down
 - [ADR-020: Kafka für Event-, Audit- und Log-Streaming](docs/adr/ADR-020-kafka-event-audit-und-log-streaming.md)
 - [ADR-022: Deploymentprofile und Platform Witness](docs/adr/ADR-022-deploymentprofile-und-platform-witness.md)
 - [ADR-023: Native Server-TLS- und Transportidentität](docs/adr/ADR-023-native-server-tls-und-transportidentitaet.md)
+- [ADR-024: Sessionrotation und Sicherheitsgeneration](docs/adr/ADR-024-sessionrotation-und-sicherheitsgeneration.md)
+- [ADR-025: Globale Service- und Provider-Registry](docs/adr/ADR-025-globale-service-und-provider-registry.md)
 - [Betriebsprofil](docs/BETRIEBSPROFIL.md)
 - [KI-Datenklassifikation](docs/KI_DATENKLASSIFIKATION.md)
 - [API-Grundvertrag](docs/API_GRUNDVERTRAG.md)

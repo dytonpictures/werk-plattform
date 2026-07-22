@@ -622,8 +622,8 @@ func assertDocumentStorageCatalog(t *testing.T, ctx context.Context, owner *pgxp
 	`).Scan(&permissionContracts); err != nil {
 		t.Fatalf("inspect document permission contracts: %v", err)
 	}
-	if permissionContracts != 5 {
-		t.Fatalf("complete document permission contracts = %d, want 5", permissionContracts)
+	if permissionContracts != 6 {
+		t.Fatalf("complete document permission contracts = %d, want 6", permissionContracts)
 	}
 
 	var workDocuments, workStorage, workInsert, workerStorage, workerDocuments, runtimeDelete bool

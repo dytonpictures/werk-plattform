@@ -36,6 +36,7 @@ func (service *Service) ResolveActor(ctx context.Context, token string, plane id
 			LEFT JOIN werk_core.tenants AS tenant ON tenant.id = account.tenant_id
 			WHERE session.token_hash = $1 AND session.revoked_at IS NULL
 			  AND session.expires_at > $2 AND account.status = 'active'
+			  AND session.session_generation = account.session_generation
 			  AND (account.tenant_id IS NULL OR tenant.status = 'active')
 		`, hash[:], service.now()).Scan(&sessionID, &accountID, &accountClass, &audience, &assurance, &authenticationKind, &tenantValue, &expiresAt, &mustChangePassword)
 	})

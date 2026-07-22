@@ -29,9 +29,27 @@ func NewRouterWithAdmin(cfg config.Config, readiness readinessChecker, logger *s
 	return NewRouterWithServices(cfg, readiness, logger, authService, nil, adminService)
 }
 
-func NewRouterWithServices(cfg config.Config, readiness readinessChecker, logger *slog.Logger, authService AuthService, workspaceService WorkspaceService, adminService AdminService) http.Handler {
+type routerServices struct {
+	documents DocumentService
+}
+
+type RouterOption func(*routerServices)
+
+func WithDocumentService(service DocumentService) RouterOption {
+	return func(services *routerServices) {
+		services.documents = service
+	}
+}
+
+func NewRouterWithServices(cfg config.Config, readiness readinessChecker, logger *slog.Logger, authService AuthService, workspaceService WorkspaceService, adminService AdminService, options ...RouterOption) http.Handler {
 	if logger == nil {
 		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+	}
+	services := routerServices{}
+	for _, option := range options {
+		if option != nil {
+			option(&services)
+		}
 	}
 
 	metrics := newHTTPMetrics(cfg.BuildVersion)
@@ -45,7 +63,7 @@ func NewRouterWithServices(cfg config.Config, readiness readinessChecker, logger
 	router.Use(correlationValidationMiddleware)
 	router.Use(browserMutationProtectionMiddleware(cfg.AllowedOrigins))
 	router.Mount("/api/v1/auth", authRoutes(authService))
-	router.Mount("/api/v1", workRoutes(authService, workspaceService))
+	router.Mount("/api/v1", workRoutes(authService, workspaceService, services.documents))
 	router.Mount("/admin/v1", adminRoutes(authService, adminService))
 
 	router.Get("/health/live", func(writer http.ResponseWriter, _ *http.Request) {

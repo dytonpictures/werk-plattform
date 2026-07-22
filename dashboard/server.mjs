@@ -35,6 +35,7 @@ const pageRoutes = new Map([
   ['/mfa-setup', 'mfa-setup.html'],
   ['/admin', 'admin.html'],
   ['/app', 'work.html'],
+  ['/documents', 'documents.html'],
   ['/profile', 'profile.html'],
 ]);
 

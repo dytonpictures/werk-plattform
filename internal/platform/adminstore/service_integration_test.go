@@ -233,10 +233,14 @@ func TestCreateWorkUserIntegration(t *testing.T) {
 		t.Fatalf("outbox count=%d err=%v", count, err)
 	}
 	const permanentWorkPassword = "Permanent-Password-2026!"
-	if err := identityService.ChangePassword(ctx, initialWorkLogin.SessionToken, temporaryWorkPassword, permanentWorkPassword); err != nil {
+	workPasswordRotation, err := identityService.ChangePassword(ctx, initialWorkLogin.SessionToken, temporaryWorkPassword, permanentWorkPassword)
+	if err != nil {
 		t.Fatalf("change work password: %v", err)
 	}
-	if _, err := identityService.ResolveActor(ctx, initialWorkLogin.SessionToken, identity.AccessPlaneWork); err != nil {
+	if _, err := identityService.ResolveActor(ctx, initialWorkLogin.SessionToken, identity.AccessPlaneWork); err == nil {
+		t.Fatal("pre-password-change work session remained valid")
+	}
+	if _, err := identityService.ResolveActor(ctx, workPasswordRotation.SessionToken, identity.AccessPlaneWork); err != nil {
 		t.Fatalf("resolve work actor after password change: %v", err)
 	}
 	catalog, err := service.ListWorkRoles(ctx, tenantID, actor, "0196f000-0000-7000-8000-000000000233", "0196f000-0000-7000-8000-000000000234")
@@ -256,7 +260,7 @@ func TestCreateWorkUserIntegration(t *testing.T) {
 	for _, permission := range catalog.Permissions {
 		permissionKeys = append(permissionKeys, permission.PermissionKey)
 	}
-	wantPermissionKeys := "core.documents.content.download,core.documents.document.create,core.documents.document.read,core.documents.document.update,core.documents.version.create,core.workspace.access"
+	wantPermissionKeys := "core.documents.content.download,core.documents.document.create,core.documents.document.list,core.documents.document.read,core.documents.document.update,core.documents.version.create,core.workspace.access"
 	if workspaceRoleID == "" || strings.Join(permissionKeys, ",") != wantPermissionKeys {
 		t.Fatalf("unexpected role catalog: %#v", catalog)
 	}

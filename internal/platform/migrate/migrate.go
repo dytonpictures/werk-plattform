@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io/fs"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -124,10 +125,20 @@ func loadMigrations() ([]migration, error) {
 		return nil, fmt.Errorf("read embedded migrations: %w", err)
 	}
 	migrations := make([]migration, 0, len(entries))
+	versions := make(map[uint64]string, len(entries))
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".sql") {
 			continue
 		}
+		versionText, _, found := strings.Cut(entry.Name(), "_")
+		version, versionErr := strconv.ParseUint(versionText, 10, 64)
+		if !found || len(versionText) != 6 || versionErr != nil || version == 0 {
+			return nil, fmt.Errorf("migration %s must start with a six-digit positive version", entry.Name())
+		}
+		if existing, duplicate := versions[version]; duplicate {
+			return nil, fmt.Errorf("migration version %06d is used by both %s and %s", version, existing, entry.Name())
+		}
+		versions[version] = entry.Name()
 		contents, err := migrationFiles.ReadFile("migrations/" + entry.Name())
 		if err != nil {
 			return nil, fmt.Errorf("read migration %s: %w", entry.Name(), err)

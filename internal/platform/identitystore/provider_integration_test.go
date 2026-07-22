@@ -81,10 +81,11 @@ func TestAgentAPIKeyAndProviderBindingIntegration(t *testing.T) {
 	if _, err := owner.Exec(ctx, `
 		INSERT INTO werk_core.sessions (
 			id, account_id, token_hash, audience, tenant_id, expires_at,
-			authentication_assurance, authentication_kind
+			authentication_assurance, authentication_kind, session_generation
 		) VALUES (
 			'0196f000-0000-7000-8000-000000000904', $1::uuid, $2,
-			'work', $3::uuid, now() + interval '5 minutes', 'single-factor', 'workload'
+			'work', $3::uuid, now() + interval '5 minutes', 'single-factor', 'workload',
+			(SELECT session_generation FROM werk_core.accounts WHERE id = $1::uuid)
 		)
 	`, accountID, make([]byte, 32), tenantID); err == nil {
 		t.Fatal("agent account received a work audience session")

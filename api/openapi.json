@@ -223,7 +223,46 @@
         "responses": {
           "200": { "description": "Autorisierter Arbeitskontext", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/WorkspaceOverview" } } } },
           "401": { "description": "Keine gueltige Work-Session oder Passwortwechsel noch offen", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } },
-          "403": { "description": "Workspace-Berechtigung oder tenantgebundener Kontext fehlt", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } }
+          "403": { "description": "Workspace-Berechtigung oder tenantgebundener Kontext fehlt", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } },
+          "500": { "description": "Der serverseitige Arbeits- oder Organisationskontext konnte nicht konsistent aufgeloest werden", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } }
+        }
+      }
+    },
+    "/api/v1/documents": {
+      "get": {
+        "operationId": "listWorkDocuments",
+        "summary": "Listet die fuer das Arbeitskonto sichtbaren eigenen Dokumente",
+        "description": "Der erste dokumentlokale Leseschnitt ist absichtlich auf vom authentifizierten Work-Konto erzeugte Dokumente begrenzt. Das Collection-Listenrecht autorisiert nur diese persoenliche Metadatenprojektion; Tenant, Datenprofil und Processing-Policy werden serverseitig geprueft. Die Detailansicht erfordert zusaetzlich das konkrete Dokument-Leserecht. Storage- und Byte-Metadaten sind nicht Bestandteil der Antwort.",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [
+          { "name": "q", "in": "query", "required": false, "schema": { "type": "string", "maxLength": 120 } },
+          { "name": "status", "in": "query", "required": false, "schema": { "type": "string", "enum": ["active", "archived"] } },
+          { "name": "classification", "in": "query", "required": false, "schema": { "type": "string", "enum": ["internal", "confidential", "restricted"] } },
+          { "name": "limit", "in": "query", "required": false, "schema": { "type": "integer", "minimum": 1, "maximum": 100, "default": 25 } },
+          { "name": "cursor", "in": "query", "required": false, "description": "Opaker Cursor aus next_cursor der vorherigen Seite.", "schema": { "type": "string", "minLength": 1, "maxLength": 512 } }
+        ],
+        "responses": {
+          "200": { "description": "Absteigend sortierte, dokumentlokal gefilterte Metadaten", "headers": { "Cache-Control": { "description": "Verhindert die Zwischenspeicherung geschuetzter Dokumentmetadaten.", "schema": { "type": "string", "const": "no-store" } } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/DocumentPage" } } } },
+          "400": { "description": "Ungueltiger Filter, Grenzwert oder Cursor", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } },
+          "401": { "description": "Keine gueltige Work-Session", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } },
+          "403": { "description": "Collection-Listenrecht fehlt", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } },
+          "500": { "description": "Dokumentmetadaten konnten nicht geladen werden", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } }
+        }
+      }
+    },
+    "/api/v1/documents/{documentId}": {
+      "parameters": [{ "name": "documentId", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }],
+      "get": {
+        "operationId": "getWorkDocument",
+        "summary": "Laedt Dokumentmetadaten und die unveraenderliche Versionshistorie",
+        "description": "Nicht vorhandene, nicht berechtigte und nicht nach der ersten dokumentlokalen Regel sichtbare IDs liefern einheitlich 404. Blob-, Provider-, Hash- und Transferdaten werden nicht ausgegeben.",
+        "security": [{ "sessionCookie": [] }],
+        "responses": {
+          "200": { "description": "Autorisierte Dokumentansicht", "headers": { "ETag": { "$ref": "#/components/headers/EntityVersion" }, "Cache-Control": { "description": "Verhindert die Zwischenspeicherung geschuetzter Dokumentmetadaten.", "schema": { "type": "string", "const": "no-store" } } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/DocumentDetail" } } } },
+          "400": { "description": "Ungueltige Dokument-ID", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } },
+          "401": { "description": "Keine gueltige Work-Session", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } },
+          "404": { "description": "Dokument nicht vorhanden oder nicht sichtbar", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } },
+          "500": { "description": "Dokumentansicht konnte nicht geladen werden", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } }
         }
       }
     },
@@ -706,6 +745,59 @@
           "role_keys": { "type": "array", "items": { "type": "string" } }
         }
       },
+      "DocumentClassification": {
+        "type": "object", "additionalProperties": false,
+        "required": ["revision", "level", "retention_class", "legal_hold"],
+        "properties": {
+          "revision": { "type": "integer", "minimum": 1 },
+          "level": { "type": "string", "enum": ["internal", "confidential", "restricted"] },
+          "retention_class": { "type": "string", "pattern": "^[a-z][a-z0-9.-]+$" },
+          "retention_until": { "type": "string", "format": "date-time" },
+          "legal_hold": { "type": "boolean" }
+        }
+      },
+      "DocumentVersion": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "version_number", "source", "published_at"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "version_number": { "type": "integer", "minimum": 1 },
+          "source": { "type": "string", "enum": ["upload", "import", "collaboration", "signature"] },
+          "published_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "DocumentSummary": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "title", "status", "source_module", "created_at", "updated_at", "version", "latest_version", "classification"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "title": { "type": "string", "minLength": 1, "maxLength": 240 },
+          "status": { "type": "string", "enum": ["active", "archived"] },
+          "source_module": { "type": "string", "pattern": "^[a-z][a-z0-9.-]+$" },
+          "created_at": { "type": "string", "format": "date-time" },
+          "updated_at": { "type": "string", "format": "date-time" },
+          "version": { "type": "integer", "minimum": 1 },
+          "latest_version": { "$ref": "#/components/schemas/DocumentVersion" },
+          "classification": { "$ref": "#/components/schemas/DocumentClassification" }
+        }
+      },
+      "DocumentPage": {
+        "type": "object", "additionalProperties": false,
+        "required": ["visibility_scope", "items"],
+        "properties": {
+          "visibility_scope": { "type": "string", "const": "created-by-me" },
+          "items": { "type": "array", "maxItems": 100, "items": { "$ref": "#/components/schemas/DocumentSummary" } },
+          "next_cursor": { "type": "string", "minLength": 1, "maxLength": 512 }
+        }
+      },
+      "DocumentDetail": {
+        "type": "object", "additionalProperties": false,
+        "required": ["document", "versions"],
+        "properties": {
+          "document": { "$ref": "#/components/schemas/DocumentSummary" },
+          "versions": { "type": "array", "items": { "$ref": "#/components/schemas/DocumentVersion" } }
+        }
+      },
       "WorkspaceTenant": {
         "type": "object", "additionalProperties": false, "required": ["id", "name", "status"],
         "properties": {
@@ -729,7 +821,6 @@
           "organizational_unit": { "$ref": "#/components/schemas/WorkspaceOrganizationalUnit" },
           "organizational_path": {
             "type": "array",
-            "maxItems": 64,
             "description": "Aktive Organisationseinheiten vom obersten Kontext bis zur direkten Mitgliedschaft; ausschließlich serverseitig im Session-Tenant aufgelöst.",
             "items": { "$ref": "#/components/schemas/WorkspaceOrganizationalUnit" }
           },

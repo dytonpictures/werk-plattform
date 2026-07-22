@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"errors"
 	"net/http"
 	"time"
 
@@ -23,11 +24,11 @@ type AuthService interface {
 }
 
 type passwordChanger interface {
-	ChangePassword(context.Context, string, string, string) error
+	ChangePassword(context.Context, string, string, string) (identity.SessionRotation, error)
 }
 
 type auditedPasswordChanger interface {
-	ChangePasswordWithAudit(context.Context, string, string, string, string, string) error
+	ChangePasswordWithAudit(context.Context, string, string, string, string, string) (identity.SessionRotation, error)
 }
 
 type auditedLogoutService interface {
@@ -111,6 +112,10 @@ func authRoutes(service AuthService) http.Handler {
 			requestIDFromContext(req.Context()), correlationIDFromContext(req.Context()),
 		)
 		if err != nil {
+			if !isAuthenticationRejection(err) {
+				writeProblem(w, req, http.StatusInternalServerError, "mfa-processing-failed", "MFA processing failed", "The MFA request could not be processed.")
+				return
+			}
 			writeProblem(w, req, http.StatusUnauthorized, "mfa-verification-failed", "MFA verification failed", "The verification code was rejected.")
 			return
 		}
@@ -137,6 +142,10 @@ func authRoutes(service AuthService) http.Handler {
 			requestIDFromContext(req.Context()), correlationIDFromContext(req.Context()),
 		)
 		if err != nil {
+			if !isAuthenticationRejection(err) {
+				writeProblem(w, req, http.StatusInternalServerError, "mfa-processing-failed", "MFA processing failed", "The MFA request could not be processed.")
+				return
+			}
 			writeProblem(w, req, http.StatusUnauthorized, "mfa-enrollment-failed", "MFA enrollment failed", "Enrollment could not be started.")
 			return
 		}
@@ -171,9 +180,18 @@ func authRoutes(service AuthService) http.Handler {
 			requestIDFromContext(req.Context()), correlationIDFromContext(req.Context()),
 		)
 		if err != nil {
+			if !isAuthenticationRejection(err) {
+				writeProblem(w, req, http.StatusInternalServerError, "mfa-processing-failed", "MFA processing failed", "The MFA request could not be processed.")
+				return
+			}
 			writeProblem(w, req, http.StatusUnauthorized, "mfa-verification-failed", "MFA verification failed", "The verification code was rejected.")
 			return
 		}
+		if err := result.Rotation.Validate(time.Now()); err != nil {
+			writeProblem(w, req, http.StatusInternalServerError, "session-rotation-failed", "Session rotation failed", "The replacement session could not be installed.")
+			return
+		}
+		setSessionCookie(w, req, result.Rotation.SessionToken, sessionCookieMaxAge(result.Rotation.ExpiresAt))
 		writeJSON(w, http.StatusOK, result)
 	})
 	r.Get("/session", func(w http.ResponseWriter, req *http.Request) {
@@ -228,16 +246,26 @@ func authRoutes(service AuthService) http.Handler {
 			writeProblem(w, req, http.StatusBadRequest, "invalid-password", "Invalid password", "The new password does not meet the requirements.")
 			return
 		}
+		var rotation identity.SessionRotation
 		var err error
 		if audited, ok := service.(auditedPasswordChanger); ok {
-			err = audited.ChangePasswordWithAudit(req.Context(), cookieValue(req, "werk_session"), input.CurrentPassword, input.NewPassword, requestIDFromContext(req.Context()), correlationIDFromContext(req.Context()))
+			rotation, err = audited.ChangePasswordWithAudit(req.Context(), cookieValue(req, "werk_session"), input.CurrentPassword, input.NewPassword, requestIDFromContext(req.Context()), correlationIDFromContext(req.Context()))
 		} else {
-			err = changer.ChangePassword(req.Context(), cookieValue(req, "werk_session"), input.CurrentPassword, input.NewPassword)
+			rotation, err = changer.ChangePassword(req.Context(), cookieValue(req, "werk_session"), input.CurrentPassword, input.NewPassword)
 		}
 		if err != nil {
+			if !isAuthenticationRejection(err) {
+				writeProblem(w, req, http.StatusInternalServerError, "password-change-processing-failed", "Password change failed", "The password change could not be processed.")
+				return
+			}
 			writeProblem(w, req, http.StatusUnauthorized, "password-change-failed", "Password change failed", "The password could not be changed.")
 			return
 		}
+		if err := rotation.Validate(time.Now()); err != nil {
+			writeProblem(w, req, http.StatusInternalServerError, "session-rotation-failed", "Session rotation failed", "The replacement session could not be installed.")
+			return
+		}
+		setSessionCookie(w, req, rotation.SessionToken, sessionCookieMaxAge(rotation.ExpiresAt))
 		writeJSON(w, http.StatusOK, map[string]bool{"password_changed": true})
 	})
 	r.Patch("/preferences", func(w http.ResponseWriter, req *http.Request) {
@@ -265,6 +293,17 @@ func authRoutes(service AuthService) http.Handler {
 	return r
 }
 
+func isAuthenticationRejection(err error) bool {
+	return errors.Is(err, identity.ErrInvalidCredentials) ||
+		errors.Is(err, identity.ErrSessionInvalid) ||
+		errors.Is(err, identity.ErrSessionExpired) ||
+		errors.Is(err, identity.ErrMFAInvalid) ||
+		errors.Is(err, identity.ErrMFARequired) ||
+		errors.Is(err, identity.ErrMFAEnrollment) ||
+		errors.Is(err, identity.ErrMFAChallengeUsed) ||
+		errors.Is(err, identity.ErrAccessDenied)
+}
+
 func setSessionCookie(writer http.ResponseWriter, request *http.Request, value string, maxAge int) {
 	setPrivateCookie(writer, request, "werk_session", value, maxAge)
 	csrfValue := newCSRFToken()
@@ -272,6 +311,25 @@ func setSessionCookie(writer http.ResponseWriter, request *http.Request, value s
 		csrfValue = ""
 	}
 	setCSRFCookie(writer, request, csrfValue, maxAge)
+}
+
+func sessionCookieMaxAge(expiresAt time.Time) int {
+	if expiresAt.IsZero() {
+		return 0
+	}
+	remaining := time.Until(expiresAt)
+	if remaining <= 0 {
+		return -1
+	}
+	seconds := int64(remaining / time.Second)
+	if remaining%time.Second != 0 {
+		seconds++
+	}
+	maxInt := int64(^uint(0) >> 1)
+	if seconds > maxInt {
+		return int(maxInt)
+	}
+	return int(seconds)
 }
 
 func setPrivateCookie(writer http.ResponseWriter, request *http.Request, name, value string, maxAge int) {

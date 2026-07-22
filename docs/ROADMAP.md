@@ -184,6 +184,17 @@ Verarbeitungsverzeichnis sowie einzelne Business-Objektregistrierungen,
 `BusinessObjectView`, Relationen, Policy-Facts und Suchprojektionen bleiben
 offen. Änderungen vorbehalten.
 
+**Service-/Provider-Registry 2026-07-22:** Der globale, versionierte
+Metadatenvertrag trennt logische Dienste, technische Capabilities,
+service-spezifische Providerinstanzen und deren ausdrückliche Bindungen. Die
+Auflösung ist provider-ID-, registry-vertrags-, dienst-, capability-, boundary-
+und tenantgenau und erhält diese Koordinaten gemeinsam im Ergebnis;
+automatische Providerwahl, Health-Failover, Providerkonfiguration und Geheimnisse sind kein
+Teil der Registry. Das Go- und PostgreSQL-Fundament ist ownerverwaltet und noch
+an keinen bestehenden Identity-, Storage-, Kafka- oder Certificate-Adapter
+gekoppelt. Vor einer solchen Kopplung wird genau ein Domänenverbraucher mit
+Audit-, Outbox-, RLS- und Betriebsvertrag integriert; Änderungen vorbehalten.
+
 - Ressourcenregistrierung und `BusinessObjectView` für Navigation, Suche und
   autorisierte Kontextansichten implementieren.
 - `BusinessRelation` mit registrierten Relationstypen, Owner, Gültigkeitszeit und

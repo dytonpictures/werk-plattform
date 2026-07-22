@@ -17,6 +17,7 @@ import (
 	"github.com/dytonpictures/werk/internal/platform/adminstore"
 	"github.com/dytonpictures/werk/internal/platform/config"
 	"github.com/dytonpictures/werk/internal/platform/database"
+	"github.com/dytonpictures/werk/internal/platform/documentstore"
 	"github.com/dytonpictures/werk/internal/platform/httpapi"
 	"github.com/dytonpictures/werk/internal/platform/identitystore"
 	"github.com/dytonpictures/werk/internal/platform/kafkastream"
@@ -71,6 +72,11 @@ func main() {
 		logger.Error("workspace service could not be created", "error", err)
 		os.Exit(1)
 	}
+	documentService, err := documentstore.New(workDatabase)
+	if err != nil {
+		logger.Error("document service could not be created", "error", err)
+		os.Exit(1)
+	}
 	identityDatabase, err := database.NewIdentity(context.Background(), cfg.IdentityDatabaseURL, "werk-api-identity")
 	if err != nil {
 		logger.Error("identity database could not be created", "error", err)
@@ -110,7 +116,7 @@ func main() {
 
 	server := &http.Server{
 		Addr:              cfg.HTTPAddress,
-		Handler:           httpapi.NewRouterWithServices(cfg, workDatabase, logger, authService, workspaceService, adminService),
+		Handler:           httpapi.NewRouterWithServices(cfg, workDatabase, logger, authService, workspaceService, adminService, httpapi.WithDocumentService(documentService)),
 		TLSConfig:         serverTLSConfiguration,
 		ErrorLog:          slog.NewLogLogger(logger.Handler(), slog.LevelWarn),
 		ReadHeaderTimeout: 10 * time.Second,

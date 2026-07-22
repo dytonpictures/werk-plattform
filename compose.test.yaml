@@ -5,7 +5,7 @@ services:
       target: test
       args:
         SERVICE: api
-    command: ["./internal/platform/database", "./internal/platform/identitystore", "./internal/platform/adminstore", "./internal/platform/workspacestore", "./internal/platform/auditstore", "./internal/platform/kafkastream", "-run", "Integration", "-count=1"]
+    command: ["./internal/platform/database", "./internal/platform/identitystore", "./internal/platform/adminstore", "./internal/platform/workspacestore", "./internal/platform/documentstore", "./internal/platform/auditstore", "./internal/platform/kafkastream", "-run", "Integration", "-count=1"]
     environment:
       WERK_TEST_MIGRATOR_DATABASE_URL: postgres://werk_migrator:${POSTGRES_MIGRATOR_PASSWORD:-werk-migrator-dev}@postgres:5432/werk?sslmode=disable
       WERK_TEST_WORK_DATABASE_URL: postgres://werk_work_runtime:${POSTGRES_WORK_PASSWORD:-werk-work-dev}@postgres:5432/werk?sslmode=disable

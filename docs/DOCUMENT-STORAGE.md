@@ -174,6 +174,24 @@ fachlichen Felder noch nicht; Änderungen vorbehalten.
 
 ### Stufe B – sicherer Upload
 
+**Erster Leseschnitt 2026-07-22:** Vor dem Bytepfad ist ein bewusst schmaler
+Work-Vertrag für Dokumentliste und Detailansicht vorbereitet. Die Collection-
+Berechtigung `core.documents.document.list` autorisiert ausschließlich die
+schmale persönliche Metadatenprojektion. Erst die Detailansicht benötigt die
+konkrete Ressourcenberechtigung `core.documents.document.read`.
+Core Documents begrenzt die dokumentlokale Sichtbarkeit in diesem ersten
+Schnitt auf `created_by_account_id` des authentifizierten Work-Kontos. Das ist
+eine fail-closed persönliche Ansicht, keine Aussage, dass alle Dokumente eines
+Tenants allgemein sichtbar seien. Dokumente technischer Producer und spätere
+geteilte Dokumente bleiben unsichtbar, bis ein eigener Binding-/Sichtbarkeits-
+vertrag angenommen ist.
+
+Die API gibt ausschließlich Titel, Dokumentstatus, Erzeugermodul,
+Klassifikation, Aufbewahrungszuordnung und veröffentlichte Versionsmetadaten
+aus. Blob-IDs, Hashes, Größen, Medientypen, Providerzustände und Objektpfade
+bleiben außerhalb der Work-Projektion. Die neue Work-Oberfläche bietet deshalb
+noch keine Upload- oder Downloadaktion an.
+
 - erste Work-UI für Dokumentliste, Dokumentdetail, Klassifikation und
   unveränderliche Versionshistorie auf dem versionierten Business-API-Vertrag
   aufbauen;

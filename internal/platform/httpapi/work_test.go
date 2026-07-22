@@ -18,6 +18,7 @@ type workAuthStub struct {
 	actor        identity.AuthenticatedActor
 	resolveErr   error
 	authorizeErr error
+	authorize    func(string, coreauth.Resource) error
 }
 
 func (stub workAuthStub) Login(context.Context, string, string) (string, string, error) {
@@ -36,16 +37,20 @@ func (stub workAuthStub) ResolveActor(_ context.Context, _ string, plane identit
 	}
 	return stub.actor, nil
 }
-func (stub workAuthStub) Authorize(context.Context, identity.AuthenticatedActor, string, coreauth.Resource) error {
+func (stub workAuthStub) Authorize(_ context.Context, _ identity.AuthenticatedActor, permission string, target coreauth.Resource) error {
+	if stub.authorize != nil {
+		return stub.authorize(permission, target)
+	}
 	return stub.authorizeErr
 }
 
 type workspaceServiceStub struct {
 	view workspacestore.Overview
+	err  error
 }
 
 func (stub workspaceServiceStub) Overview(context.Context, identity.AuthenticatedActor) (workspacestore.Overview, error) {
-	return stub.view, nil
+	return stub.view, stub.err
 }
 
 func TestWorkspaceRequiresWorkPlaneAndTenantPermission(t *testing.T) {
@@ -81,6 +86,16 @@ func TestWorkspaceRequiresWorkPlaneAndTenantPermission(t *testing.T) {
 	permissionDenied := request(t, NewRouterWithServices(config.Config{}, readinessStub{}, testLogger(), workAuthStub{actor: workActor, authorizeErr: coreauth.ErrDenied}, workspaceServiceStub{view: view}, nil), http.MethodGet, "/api/v1/workspace", "")
 	if permissionDenied.Code != http.StatusForbidden {
 		t.Fatalf("unprivileged workspace status = %d, want %d", permissionDenied.Code, http.StatusForbidden)
+	}
+
+	contextDenied := request(t, NewRouterWithServices(config.Config{}, readinessStub{}, testLogger(), workAuthStub{actor: workActor}, workspaceServiceStub{err: identity.ErrAccessDenied}, nil), http.MethodGet, "/api/v1/workspace", "")
+	if contextDenied.Code != http.StatusForbidden {
+		t.Fatalf("denied workspace context status = %d, want %d", contextDenied.Code, http.StatusForbidden)
+	}
+
+	loadFailed := request(t, NewRouterWithServices(config.Config{}, readinessStub{}, testLogger(), workAuthStub{actor: workActor}, workspaceServiceStub{err: errors.New("database unavailable")}, nil), http.MethodGet, "/api/v1/workspace", "")
+	if loadFailed.Code != http.StatusInternalServerError {
+		t.Fatalf("failed workspace load status = %d, want %d", loadFailed.Code, http.StatusInternalServerError)
 	}
 }
 

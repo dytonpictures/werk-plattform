@@ -41,6 +41,10 @@ type TOTPEnrollment struct {
 
 type TOTPActivation struct {
 	RecoveryCodes []string `json:"recovery_codes"`
+	// Rotation is transported as protected cookies by the HTTP adapter. It is
+	// deliberately excluded from JSON so no session credential reaches
+	// browser-visible response bodies or API logs.
+	Rotation SessionRotation `json:"-"`
 }
 
 type MFAFactorKind string

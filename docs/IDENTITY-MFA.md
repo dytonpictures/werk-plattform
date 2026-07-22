@@ -1,6 +1,6 @@
 # Core Identity: MFA- und Login-Schutz
 
-Stand: 2026-07-21
+Stand: 2026-07-22
 
 Administrationskonten können mit einem TOTP-Faktor und einmalig verwendbaren
 Recovery-Codes geschützt werden. In Produktion ist MFA verpflichtend. Die
@@ -54,8 +54,9 @@ akzeptiert.
    autorisieren und führt nach einem nötigen Passwortwechsel zur MFA-Einrichtung.
 2. Der Admin bestätigt sein aktuelles Passwort und registriert das angezeigte
    TOTP-Secret in einer Authenticator-App.
-3. Erst ein gültiger TOTP-Code aktiviert den Faktor und hebt die aktuelle
-   Session auf `multi-factor` an.
+3. Erst ein gültiger TOTP-Code aktiviert den Faktor. Die Aktivierung widerruft
+   atomar alle aktiven Sitzungen des Kontos und stellt genau eine neue
+   interaktive Sitzung mit `multi-factor`-Assurance aus.
 4. Zehn zufällige Recovery-Codes werden genau einmal angezeigt und ausschließlich
    gehasht gespeichert.
 5. Spätere Anmeldungen erzeugen nach korrektem Passwort nur eine fünf Minuten
@@ -69,6 +70,26 @@ akzeptiert.
 - Session-, Challenge- und Recovery-Tokens werden nicht im Klartext gespeichert.
 - Session- und Challenge-Cookies sind `HttpOnly`, `Secure` bei HTTPS und
   `SameSite=Strict`.
+- Ein erfolgreicher Passwortwechsel und die erste TOTP-Aktivierung widerrufen
+  atomar alle aktiven Sitzungen des Kontos und stellen genau eine neue
+  interaktive Sitzung aus. Beim Passwortwechsel wird die passende bestehende
+  Assurance übernommen, bei der TOTP-Aktivierung ist sie `multi-factor`.
+- Die HTTP-Schicht rotiert dabei sowohl das Session- als auch das CSRF-Cookie.
+  Vorherige Session- und CSRF-Token sind nach Abschluss der Transaktion
+  ungültig.
+- Sitzungen und MFA-Challenges tragen die aktuelle `session_generation` des
+  Kontos. Passwortwechsel und erste TOTP-Aktivierung erhöhen sie atomar; ein
+  bereits vorher begonnener Login oder eine alte Challenge kann danach keine
+  Sitzung mehr ausstellen.
+- Der Passwortwechsel verlängert keine bestehende Sitzung: Die Ersatzsitzung
+  übernimmt höchstens deren absolute Ablaufzeit. Die erfolgreiche erstmalige
+  TOTP-Bestätigung darf als frische Multi-Factor-Zeremonie eine neue
+  Sitzungslaufzeit beginnen.
+- Jede erfolgreiche Rotation schreibt das Security-Audit-Ereignis
+  `identity.session.rotated.v1`; Session-Rohwerte werden nicht protokolliert.
+  Die übergreifende Invariante ist in
+  [`ADR-024`](adr/ADR-024-sessionrotation-und-sicherheitsgeneration.md)
+  festgelegt.
 - Schreibende Cookie-Aufrufe benötigen eine erlaubte `Origin`, passende Fetch
   Metadata und ein konstante-Zeit-geprüftes Double-Submit-CSRF-Token.
 - Anmeldefehler werden pro normalisiertem, gehashtem Loginbezeichner persistent
@@ -94,3 +115,5 @@ akzeptiert.
 
 Diese offenen Punkte dürfen nicht durch direkte Datenbankänderungen oder ein
 allgemeines Administrator-Bypass-Verfahren ersetzt werden.
+
+Änderungen vorbehalten.
