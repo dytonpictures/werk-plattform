@@ -2,9 +2,11 @@ package httpapi
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"strings"
 	"testing"
 )
@@ -58,11 +60,37 @@ func TestDecodeJSONRejectsUnknownFieldsAndMultipleDocuments(t *testing.T) {
 	}
 }
 
-func TestSessionCookieUsesSecureFlagBehindHTTPSProxy(t *testing.T) {
+func TestSessionCookieUsesSecureFlagWithNativeTLS(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", nil)
-	request.Header.Set("X-Forwarded-Proto", "https")
+	request.TLS = &tls.ConnectionState{HandshakeComplete: true}
 	response := httptest.NewRecorder()
 	setSessionCookie(response, request, "opaque", 0)
+	assertSecureSessionCookies(t, response)
+}
+
+func TestSessionCookieTrustsHTTPSOnlyFromConfiguredProxy(t *testing.T) {
+	handler := transportSecurityMiddleware([]netip.Prefix{netip.MustParsePrefix("192.0.2.0/24")})(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		setSessionCookie(writer, request, "opaque", 0)
+	}))
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", nil)
+	request.RemoteAddr = "192.0.2.10:4242"
+	request.Header.Set("X-Forwarded-Proto", "https")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	assertSecureSessionCookies(t, response)
+
+	untrustedRequest := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", nil)
+	untrustedRequest.RemoteAddr = "198.51.100.20:4242"
+	untrustedRequest.Header.Set("X-Forwarded-Proto", "https")
+	untrustedResponse := httptest.NewRecorder()
+	handler.ServeHTTP(untrustedResponse, untrustedRequest)
+	if untrustedResponse.Result().Cookies()[0].Secure {
+		t.Fatal("untrusted proxy marked the session cookie as secure")
+	}
+}
+
+func assertSecureSessionCookies(t *testing.T, response *httptest.ResponseRecorder) {
+	t.Helper()
 	cookies := response.Result().Cookies()
 	if len(cookies) != 2 || cookies[0].Name != "werk_session" || !cookies[0].Secure || !cookies[0].HttpOnly || cookies[0].SameSite != http.SameSiteStrictMode {
 		t.Fatalf("unexpected session cookie: %#v", cookies)

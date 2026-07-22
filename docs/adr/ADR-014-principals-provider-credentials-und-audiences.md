@@ -68,5 +68,6 @@ Invarianten, verhindert dafür aber, dass Provider- oder Credentialdetails in
 Kontoart und Autorisierung hineinwachsen.
 
 Replikation und Failover ändern diese fachlichen Dimensionen nicht. Die
-Active/Passive-Autorität und der dafür notwendige Identity Witness sind in
-[`ADR-015`](ADR-015-identity-authority-witness-und-failover.md) festgelegt.
+Active/Passive-Autorität und die Domain `identity-control` des Platform Witness
+sind in [`ADR-015`](ADR-015-identity-authority-witness-und-failover.md) und
+[`ADR-022`](ADR-022-deploymentprofile-und-platform-witness.md) festgelegt.

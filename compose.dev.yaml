@@ -11,6 +11,10 @@ services:
     ports:
       - "127.0.0.1:${WERK_DEV_VALKEY_PORT:-56379}:6379"
 
+  kafka:
+    ports:
+      - "127.0.0.1:${WERK_DEV_KAFKA_PORT:-59092}:9092"
+
 # Das normale Deployment haelt das Datennetz absichtlich intern. Fuer native
 # Host-Prozesse muss das isolierte Dev-Netz Portweiterleitungen zulassen; die
 # Dienste bleiben durch die explizite 127.0.0.1-Bindung dennoch lokal.

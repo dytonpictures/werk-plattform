@@ -1962,6 +1962,38 @@ html[data-navigation-mode="collapsed"] .global-layout {
   font-size: 10px;
 }
 
+.workspace-organization-path {
+  display: flex;
+  gap: 0;
+  align-items: center;
+  flex-wrap: wrap;
+  margin: 0;
+  padding: 0;
+  color: var(--muted);
+  list-style: none;
+}
+
+.workspace-organization-path li {
+  display: inline-flex;
+  align-items: center;
+}
+
+.workspace-organization-path li + li::before {
+  margin: 0 7px;
+  content: "/";
+  color: var(--border-strong);
+}
+
+.workspace-organization-path li[aria-current="location"] {
+  color: var(--text-strong);
+  font-weight: 600;
+}
+
+.workspace-organization-path li.is-empty {
+  color: var(--faint);
+  font-style: italic;
+}
+
 .workspace-profile-link {
   justify-content: center;
   width: 100%;

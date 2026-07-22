@@ -10,18 +10,28 @@ Worker und Infrastruktur laufen in getrennten Containern.
 
 ## Dienstgrenzen
 
-- Nur `edge` veröffentlicht einen Port nach außen; Datenbank und Valkey bleiben
-  im Compose-Netz.
+- Nur `edge` veröffentlicht im vollständigen Stack einen Port nach außen;
+  Datenbank, Valkey und Kafka bleiben im Compose-Netz.
 - `dashboard` kommuniziert ausschließlich über die öffentliche Business-API.
 - `api` und `worker` verwenden PostgreSQL für fachliche Daten und Outbox.
+- `kafka` läuft als einzelner persistenter KRaft-Broker/Controller;
+  `kafka-init` legt die getrennten Domain-, Audit- und Log-Topics idempotent an.
 - `migrate` endet nach erfolgreicher Migration und wird nicht dauerhaft betrieben.
 - `database-roles` gleicht vor Migrationen die lokalen PostgreSQL-Rollen ab und
   endet danach. API und Worker kennen das Bootstrap-Credential nicht.
 - Valkey besitzt keine alleinigen fachlichen Daten.
+- Kafka verteilt Ereignisse, minimierte Security-Audits und Betriebslogs, ist
+  aber weder fachliche Wahrheit noch revisionssicheres Langzeitarchiv.
 
 ## Mindestbetrieb
 
-- TLS, externe Backups, sichere Secrets und ein nicht triviales
+- Der native API-Server verlangt in Produktion `tls` oder `mtls`. Zertifikat,
+  privater Schlüssel und gegebenenfalls Client-CA werden als sichere Dateien
+  bereitgestellt und bei Rotation fail-closed neu geladen. Ein vorgeschalteter
+  Proxy ersetzt diesen Softwarevertrag nicht; weitergereichte HTTPS-Information
+  wird nur aus ausdrücklich vertrauten Proxy-Netzen akzeptiert.
+- PostgreSQL-Verbindungen verwenden in Produktion `sslmode=verify-full`; TLS,
+  externe Backups, sichere Secrets und ein nicht triviales
   `POSTGRES_PASSWORD` sind vor nicht-lokaler Nutzung Pflicht. Dasselbe gilt für
   die getrennten Migrator-, Work-, Admin-, Service- und Worker-Passwörter.
 - Vor jedem risikoreichen Update wird ein getestetes Datenbank- und
@@ -34,6 +44,38 @@ Worker und Infrastruktur laufen in getrennten Containern.
 - Runtime-Dienste verbinden sich ausschließlich als Non-Owner-Rollen ohne
   `SUPERUSER` oder `BYPASSRLS`. Der Bootstrap-Superuser ist kein
   Anwendungscredential.
+- Bei aktiviertem Kafka verlangt die Produktionskonfiguration TLS sowie SASL
+  oder ein Client-Zertifikat. Das mitgelieferte Plaintext-Profil ist auf das
+  interne lokale Compose-Netz begrenzt und kein fertiges Produktions-
+  Sicherheitsprofil.
+
+Der native Transportvertrag und seine bewusste Trennung von Policy, Lease und
+Fencing sind in
+[`ADR-023`](adr/ADR-023-native-server-tls-und-transportidentitaet.md)
+festgelegt; Änderungen vorbehalten.
+
+## Kafka und Streamingbetrieb
+
+Der gepinnte Broker verwendet ein eigenes persistentes Volume. Domain-Events
+werden sieben Tage, minimierte Auditexporte dreißig Tage und Laufzeitlogs sieben
+Tage im lokalen Startprofil gehalten. Diese Werte begrenzen ausschließlich den
+Transportpuffer und dürfen nach Datenklassifikation und Betreiberpflichten
+angepasst werden. `cleanup.policy=delete` verhindert eine versehentliche
+Kompaktion des Auditverlaufs.
+
+Ein Broker-Ausfall macht die Business-API nicht automatisch fachlich
+unbrauchbar: PostgreSQL nimmt autoritative Änderungen, Audits und Outbox-
+Einträge weiter atomar an. Der Worker baut Rückstau auf und verarbeitet ihn nach
+Wiederkehr. Betreiber überwachen Broker-Health, nicht abgeschlossene
+`outbox_events`, `security_audit_export_queue`, Retry-/Dead-Zustände sowie die
+Anzahl verworfener, nicht revisionsrelevanter Laufzeitlogs.
+
+Der einzelne Broker ist keine HA-Lösung. Mehrere Broker/Controller auf
+getrennten Hosts, Replikationsfaktoren größer eins, gesicherte Listener,
+ACL-Verwaltung, Kapazitäts- und Wiederherstellungstests werden in einem späteren
+Clusterprofil festgelegt. Der verbindliche Vertrag steht in
+[`ADR-020`](adr/ADR-020-kafka-event-audit-und-log-streaming.md); Änderungen
+vorbehalten.
 
 ## Backup und Wiederherstellung
 
@@ -58,6 +100,16 @@ Das aktuelle logische Backup deckt PostgreSQL ab. WAL/PITR sowie ein konsistente
 Backup des späteren Object Storage werden ergänzt, sobald die dafür notwendige
 Infrastruktur Teil des Betriebsprofils wird.
 
+Das tenantgesicherte Dokument-/Blob-Metadatenschema darf vorher als inaktives
+Fundament vorhanden sein. Ein produktiver Upload bleibt gesperrt, bis der
+S3-kompatible Provider, ein verschlüsseltes Objektmanifest, ein definierter
+Backup-Cut, Orphan-/Missing-Object-Reconciliation und ein gemeinsamer
+PostgreSQL-/Object-Store-Restore-Test geliefert sind. Der Storage-Dienst bleibt
+im internen Datennetz und erhält keine rohe öffentliche `/service`-Route. Der
+Vertrag steht in
+[`ADR-021`](adr/ADR-021-interner-dokument-blob-und-transfervertrag.md);
+Änderungen vorbehalten.
+
 ## Release und Aktualisierung
 
 SemVer-Tags auf einem in `Canary` enthaltenen Commit erzeugen geprüfte
@@ -77,14 +129,16 @@ vorbehalten.
 
 ## Abgrenzung zum späteren HA-Profil
 
-Dieses Profil besitzt genau eine Identity-Autorität und keinen Identity
-Witness. Zusätzliche API- oder Worker-Prozesse an derselben PostgreSQL-Datenbank
+Dieses Profil besitzt genau eine Identity-Autorität und keinen Platform Witness.
+Zusätzliche API- oder Worker-Prozesse an derselben PostgreSQL-Datenbank
 ändern daran nichts; sie teilen dieselbe fachliche Wahrheit.
 
 Eine zweite Instanz mit eigener Datenbankkopie ist ein eigenes
 Active/Passive-Betriebsprofil. Automatischer Failover erfordert dort gemäß
-[`ADR-015`](adr/ADR-015-identity-authority-witness-und-failover.md) einen
-unabhängigen QDevice-artigen Witness, eine exklusive Lease, eine monotone
+[`ADR-015`](adr/ADR-015-identity-authority-witness-und-failover.md) und
+[`ADR-022`](adr/ADR-022-deploymentprofile-und-platform-witness.md) einen
+unabhängigen QDevice-artigen Platform Witness mit `identity-control`, eine
+exklusive Lease, eine monotone
 Autoritätsgeneration, eine bestätigte Replikationsschranke und extern wirksames
 Fencing. `/health/live` und `/health/ready` bleiben Diagnose- und
 Orchestrierungssignale; sie vergeben keine Schreibhoheit.

@@ -36,7 +36,7 @@ nach einem geprüften Re-Encryption-Lauf entfernt werden.
 
 In einem späteren Active/Passive-Profil müssen Haupt- und Reserveinstanz vor
 einer Promotion denselben vollständig verfügbaren Schlüsselring besitzen. Der
-Identity Witness erhält diese Schlüssel ausdrücklich nicht. Nur der aktuelle
+Platform Witness erhält diese Schlüssel ausdrücklich nicht. Nur der aktuelle
 Lease-Inhaber darf neue MFA-Secrets schreiben oder eine Rotation beginnen; ein
 alter Schlüssel wird erst entfernt, wenn Re-Encryption, Replikation,
 Reserve-Lesbarkeit und Wiederherstellung nachgewiesen sind. Die allgemeine

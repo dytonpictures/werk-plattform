@@ -3,22 +3,28 @@
 WERK ist ein selbst hostbares, modulares Unternehmensbetriebssystem. Der aktuelle
 Stand liefert das fachneutrale Plattformfundament: getrennte Dashboard-, API-,
 Worker- und Migrationscontainer, PostgreSQL, Valkey, Caddy und versionierte
-Core-Migrationen. Bereits verfügbar sind getrennt authentifizierte Self-Service-,
+Core-Migrationen sowie Apache Kafka im KRaft-Modus. Bereits verfügbar sind
+getrennt authentifizierte Self-Service-,
 Workspace- und Administrationsverträge für Identität, Mandanten,
 Organisationseinheiten und Work-Rollen. Geschützte Änderungen schreiben Audit
 und bei fachlicher Relevanz Outbox-Ereignisse atomar. Eine MFA- und
 berechtigungsgeschützte Audit-Ansicht macht Sicherheitsereignisse ohne freie
 interne Detail- oder Session-Rohdaten nachvollziehbar.
+Domain-Events, minimierte Security-Audits und strukturierte Laufzeitlogs werden
+über getrennte Kafka-Topics mit einem gemeinsamen versionierten Tagging-
+Envelope verteilt; PostgreSQL bleibt die verbindliche Wahrheit. Topic-Layout,
+Retention und spätere Clustergröße werden mit der Betriebsreife verfeinert;
+Änderungen vorbehalten.
 
 ## Native Entwicklung
 
 API, Worker, Migration und Dashboard können direkt als lokale Prozesse laufen.
-Nur PostgreSQL und Valkey bleiben dabei als austauschbare Infrastruktur in
-Containern. Das getrennte Compose-Projekt `werk-dev` verwendet ein eigenes
-PostgreSQL-Volume und veröffentlicht beide Dienste ausschließlich auf Loopback.
+Nur PostgreSQL, Valkey und Kafka bleiben dabei als Infrastruktur in Containern.
+Das getrennte Compose-Projekt `werk-dev` verwendet eigene persistente Volumes
+und veröffentlicht die Entwicklungsanschlüsse ausschließlich auf Loopback.
 
-Voraussetzungen sind Go 1.26, Node.js 24 und Docker Compose v2. Ein gemeinsamer
-Start inklusive Rolleninitialisierung und Migration genügt:
+Voraussetzungen sind mindestens Go 1.26.5, Node.js 24 und Docker Compose v2.
+Ein gemeinsamer Start inklusive Rolleninitialisierung und Migration genügt:
 
 ```bash
 make dev
@@ -49,8 +55,37 @@ Status und Logs der Infrastruktur sind mit `make dev-infra-status` und
 make dev-down
 ```
 
-Standardmäßig verwendet PostgreSQL lokal Port `55432`, Valkey `56379`, die API
-`8081` und das Dashboard `3000`. Alle Werte können über die in
+Für den kurzen Entwicklungszyklus sind keine Container erforderlich. Ein
+einzelnes geändertes Paket, ein wiederholter Stabilitätslauf und der vollständige
+native Check laufen getrennt:
+
+```bash
+make test-focus PKG=./internal/platform/sync
+make test-repeat PKG=./internal/platform/sync TEST_COUNT=20
+make check-native
+```
+
+Ohne installiertes `make`, etwa direkt aus PowerShell, sind die entsprechenden
+Go-Befehle:
+
+```powershell
+go test ./internal/platform/sync -count=1
+go test ./internal/platform/sync -count=20
+go test ./...
+go vet ./...
+go build ./...
+```
+
+`make test-fast` beziehungsweise `make test` verwendet den Go-Testcache und
+prüft alle Pakete. Datenbank- und Kafka-Integrationstests werden dabei ohne die
+expliziten `WERK_TEST_*`-Umgebungsvariablen übersprungen. `make check` ergänzt
+den nativen Check um die Compose-Konfigurationsprüfung; den isolierten
+Container- und Migrationstest startet erst `make integration-test`. Die
+Prüfstufen können mit wachsendem Core weiter verfeinert werden; Änderungen
+vorbehalten.
+
+Standardmäßig verwendet PostgreSQL lokal Port `55432`, Valkey `56379`, Kafka
+`59092`, die API `8081` und das Dashboard `3000`. Alle Werte können über die in
 [`scripts/dev-env.sh`](scripts/dev-env.sh) aufgeführten `WERK_DEV_*`-Variablen
 überschrieben werden. Enthält ein eigenes Kennwort URI-Sonderzeichen, muss die
 zugehörige vollständige `WERK_DEV_*_DATABASE_URL` percent-codiert gesetzt werden.
@@ -84,6 +119,13 @@ Der Prometheus-Endpunkt bleibt absichtlich im internen Containernetz:
 
 ```bash
 docker compose exec api wget -qO- http://127.0.0.1:8080/metrics
+```
+
+Die Kafka-Topics und ihre Konfiguration lassen sich intern prüfen:
+
+```bash
+docker compose exec kafka /opt/kafka/bin/kafka-topics.sh \
+  --bootstrap-server kafka:19092 --list
 ```
 
 ## Verschlüsseltes Datenbankbackup
@@ -202,7 +244,20 @@ make restore-test
 Die lokale Compose-Datei verwendet erkennbare Entwicklungskennwörter. Vor jeder
 nach außen erreichbaren Instanz müssen alle Werte aus `.env.example` durch
 eigene starke Secrets ersetzt werden. `WERK_ENV=production` lehnt die bekannten
-Entwicklungskennwörter und den PostgreSQL-Bootstrap-Login technisch ab.
+Entwicklungskennwörter und den PostgreSQL-Bootstrap-Login technisch ab. Der
+produktive API-Prozess startet außerdem nur mit nativem `tls` oder `mtls`:
+
+```bash
+WERK_HTTP_TLS_MODE=tls
+WERK_HTTP_TLS_CERT_FILE=/run/secrets/api-server.pem
+WERK_HTTP_TLS_KEY_FILE=/run/secrets/api-server-key.pem
+```
+
+`mtls` verlangt zusätzlich `WERK_HTTP_TLS_CLIENT_CA_FILE`. Ein Reverse Proxy ist
+dafür nicht erforderlich. Wird TLS trotzdem vor der API terminiert, vertraut
+die Anwendung `X-Forwarded-Proto` nur für Netze aus
+`WERK_HTTP_TRUSTED_PROXY_CIDRS`. Produktions-URLs zu PostgreSQL verwenden
+`sslmode=verify-full`; Änderungen vorbehalten.
 
 API-Namensräume bleiben hart getrennt:
 
@@ -228,11 +283,15 @@ docker compose down
 - [Vision](docs/vision.md)
 - [Datenmodell](docs/DATENMODELL.md)
 - [Roadmap](docs/ROADMAP.md)
+- [Backend-Implementierungsstand](docs/BACKEND-IMPLEMENTIERUNGSSTAND.md)
 - [Clientarchitektur](docs/CLIENT-ARCHITEKTUR.md)
 - [Architekturentscheidungen](docs/adr/)
 - [ADR-013: Kotlin-/Compose-Multiplatform-Clients](docs/adr/ADR-013-native-clients-kotlin-compose-multiplatform.md)
 - [ADR-014: Principals, Provider, Credentials und Audiences](docs/adr/ADR-014-principals-provider-credentials-und-audiences.md)
 - [ADR-015: Identity-Autorität, Witness und Failover](docs/adr/ADR-015-identity-authority-witness-und-failover.md)
+- [ADR-020: Kafka für Event-, Audit- und Log-Streaming](docs/adr/ADR-020-kafka-event-audit-und-log-streaming.md)
+- [ADR-022: Deploymentprofile und Platform Witness](docs/adr/ADR-022-deploymentprofile-und-platform-witness.md)
+- [ADR-023: Native Server-TLS- und Transportidentität](docs/adr/ADR-023-native-server-tls-und-transportidentitaet.md)
 - [Betriebsprofil](docs/BETRIEBSPROFIL.md)
 - [KI-Datenklassifikation](docs/KI_DATENKLASSIFIKATION.md)
 - [API-Grundvertrag](docs/API_GRUNDVERTRAG.md)

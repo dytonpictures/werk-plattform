@@ -2,8 +2,9 @@ GO_PACKAGES := ./...
 GO ?= go
 GOFMT ?= gofmt
 NODE ?= node
+TEST_COUNT ?= 20
 
-.PHONY: fmt fmt-check vet test check build compose-config compose-build up down logs \
+.PHONY: fmt fmt-check vet test test-fast test-focus test-repeat check-native check build compose-config compose-build up down logs \
 	migration-test integration-test backup restore restore-test dev dev-apps dev-infra dev-db-roles \
 	dev-infra-status dev-infra-logs dev-migrate dev-api dev-worker \
 	dev-dashboard dev-down
@@ -17,16 +18,29 @@ fmt-check:
 vet:
 	$(GO) vet $(GO_PACKAGES)
 
-test:
+test: test-fast
+
+test-fast:
 	$(GO) test $(GO_PACKAGES)
 
-check: fmt-check vet test compose-config
+test-focus:
+	@if [ -z "$(PKG)" ]; then echo "PKG is required, for example: make test-focus PKG=./internal/platform/sync"; exit 2; fi
+	$(GO) test $(PKG) -count=1
+
+test-repeat:
+	@if [ -z "$(PKG)" ]; then echo "PKG is required, for example: make test-repeat PKG=./internal/platform/sync TEST_COUNT=20"; exit 2; fi
+	$(GO) test $(PKG) -count=$(TEST_COUNT)
+
+check-native: fmt-check vet test-fast build
+
+check: check-native compose-config
 
 build:
 	$(GO) build $(GO_PACKAGES)
 
 compose-config:
 	docker compose config --quiet
+	docker compose -f compose.yaml -f compose.dev.yaml config --quiet
 	docker compose -f compose.yaml -f compose.ops.yaml config --quiet
 	docker compose -f compose.yaml -f compose.test.yaml -f compose.ops.yaml -f compose.backup-test.yaml config --quiet
 	WERK_BUILD_VERSION=0.0.0 docker compose -f compose.yaml -f compose.release.yaml config --quiet

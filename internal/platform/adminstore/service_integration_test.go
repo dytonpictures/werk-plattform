@@ -252,7 +252,12 @@ func TestCreateWorkUserIntegration(t *testing.T) {
 			}
 		}
 	}
-	if workspaceRoleID == "" || len(catalog.Permissions) != 1 || catalog.Permissions[0].PermissionKey != "core.workspace.access" {
+	permissionKeys := make([]string, 0, len(catalog.Permissions))
+	for _, permission := range catalog.Permissions {
+		permissionKeys = append(permissionKeys, permission.PermissionKey)
+	}
+	wantPermissionKeys := "core.documents.content.download,core.documents.document.create,core.documents.document.read,core.documents.document.update,core.documents.version.create,core.workspace.access"
+	if workspaceRoleID == "" || strings.Join(permissionKeys, ",") != wantPermissionKeys {
 		t.Fatalf("unexpected role catalog: %#v", catalog)
 	}
 	customRole, err := service.CreateWorkRole(ctx, CreateWorkRoleInput{

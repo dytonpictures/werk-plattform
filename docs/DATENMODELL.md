@@ -209,9 +209,10 @@ gewählten Anmeldeverfahren.
 
 Provider-, Principal-, Credential- und Audience-Grenzen sind in
 [`ADR-014`](adr/ADR-014-principals-provider-credentials-und-audiences.md)
-festgelegt. Die spätere Active/Passive-Autorität mit Identity Witness, Lease,
-Autoritätsgeneration und Fencing beschreibt
-[`ADR-015`](adr/ADR-015-identity-authority-witness-und-failover.md).
+festgelegt. Die spätere Active/Passive-Autorität mit Platform Witness, Lease,
+Autoritätsgeneration und Fencing beschreiben
+[`ADR-015`](adr/ADR-015-identity-authority-witness-und-failover.md) und
+[`ADR-022`](adr/ADR-022-deploymentprofile-und-platform-witness.md).
 
 Eine reale Person, eine Organisation, ein Arbeitskonto und ein
 Administrationssubjekt sind verschiedene Objekte. Dadurch kann dieselbe Person
@@ -465,46 +466,89 @@ erDiagram
 ```mermaid
 erDiagram
     DOCUMENT ||--|{ DOCUMENT_VERSION : versions
-    DOCUMENT_VERSION ||--|| BLOB : stores
+    BLOB ||--o{ DOCUMENT_VERSION : content_for
+    BLOB ||--|{ BLOB_LOCATION : stored_at
     DOCUMENT ||--o{ DOCUMENT_LINK : relates_to
-    DOCUMENT ||--o{ DOCUMENT_CLASSIFICATION : classified_as
+    DOCUMENT ||--|{ DOCUMENT_CLASSIFICATION_REVISION : classified_over_time
 
     DOCUMENT {
         uuid id PK
         uuid tenant_id FK
         string title
         string status
-        string owning_module
+        string source_module
     }
     DOCUMENT_VERSION {
         uuid id PK
+        uuid tenant_id FK
         uuid document_id FK
         int version
         uuid blob_id FK
-        string mime_type
-        string checksum
+        string source
+        timestamp published_at
     }
     BLOB {
         uuid id PK
         uuid tenant_id FK
-        string storage_provider
-        string storage_key
+        string state
         bigint size_bytes
-        string checksum
+        bytes sha256
+        string media_type
+    }
+    BLOB_LOCATION {
+        uuid id PK
+        uuid tenant_id FK
+        uuid blob_id FK
+        string provider_key
+        uuid opaque_key
+        string state
     }
     DOCUMENT_LINK {
         uuid id PK
+        uuid tenant_id FK
         uuid document_id FK
         resource_ref target
         string relation_type
     }
-    DOCUMENT_CLASSIFICATION {
+    DOCUMENT_CLASSIFICATION_REVISION {
         uuid id PK
+        uuid tenant_id FK
         uuid document_id FK
+        int revision
         string classification
-        date retention_until
+        string retention_class
+        timestamp retention_until
+        boolean legal_hold
     }
 ```
+
+Core Documents besitzt Dokument, veröffentlichte Version, Klassifikationshistorie
+und fachliche Sichtbarkeit. `source_module` bezeichnet den fachlichen Erzeuger
+und nicht den Datenowner. Core Storage besitzt Blob, Blob-Location, Quarantäne,
+Transferzustand und den Provideradapter. Der Object Store hält nur Bytes und ist
+keine Berechtigungs- oder Dokumentenwahrheit.
+
+Jede gezeigte tenantbezogene Tabelle trägt `tenant_id`. Dokument-Version-,
+Blob-, Location-, Link- und Klassifikationsbezüge verwenden zusammengesetzte
+Tenant-Fremdschlüssel. Eine `DocumentVersion` ist nach Veröffentlichung
+unveränderlich. Größe, erkannter Medientyp und serverseitiger SHA-256-Digest
+gehören zum versiegelten Blob; sie werden nicht als abweichende zweite Wahrheit
+in der Version geführt. Mehrere Versionen dürfen innerhalb desselben Tenants
+denselben Blob referenzieren.
+
+Ein versiegelter Blob wechselt bei einer nicht entscheidbaren Providerprüfung
+auf `unknown` und bei bestätigtem Fehlen aller nutzbaren Locations auf
+`missing`. Beide Zustände sperren Zugriffe fail-closed, behalten aber Hash,
+Größe und Medientyp für Restore und Reconciliation. `available` darf erst nach
+erneuter Verifikation einer bestehenden oder reparierten Location wieder
+gesetzt werden; Änderungen vorbehalten.
+
+Ein neues Dokument wird erst mit einer erfolgreich geprüften Version 1 sichtbar.
+Unvollständige Transfers und Quarantäne-Blobs sind keine Dokumentversionen. Der
+erste produktive Transfer verwendet ein kurzlebiges, einmalig verbrauchbares,
+an Actor, Tenant, Aktion und Ressource gebundenes Ticket. Ticket-Rohwerte,
+Provider-Credentials und Objektpfade erscheinen weder in Audit noch in Events
+oder Logs.
 
 Ein Suchtreffer ist kein zweiter Datensatz, sondern ein berechtigungsgeprüfter
 Indexeintrag mit `ResourceRef`, Titel, Ausschnitt und Zielaktion. Fachmodule liefern
@@ -513,6 +557,13 @@ indexierbare Projektionen; der Core betreibt Index und Suche.
 `Blob` ist mandantengebunden. Eine Deduplizierung von Dateien über
 Mandantengrenzen hinweg ist nicht zulässig, damit weder Inhalt noch Metadaten
 eines anderen Mandanten ableitbar werden.
+
+Ein späterer Collaboration-/Sync-Dienst besitzt veränderliche Arbeitskopien,
+Revisionen, Sync-Cursor und Konflikte. Er erzeugt keine eigene Identity, ACL-
+oder Dokumentwahrheit und veröffentlicht akzeptierte Arbeitsstände ausschließlich
+als neue `DocumentVersion`. Den ausführbaren Ausbauplan beschreiben
+[`ADR-021`](adr/ADR-021-interner-dokument-blob-und-transfervertrag.md) und
+[`DOCUMENT-STORAGE.md`](DOCUMENT-STORAGE.md); Änderungen vorbehalten.
 
 ### 3.5 Benachrichtigungen, Audit und Ereignisse
 
@@ -529,6 +580,7 @@ erDiagram
         string producer
         resource_ref subject
         json payload
+        json tags
         uuid correlation_id
         uuid causation_id
         timestamp occurred_at
@@ -536,10 +588,15 @@ erDiagram
     AUDIT_ENTRY {
         uuid id PK
         uuid tenant_id FK
-        actor_ref actor
+        actor_ref initiated_by
+        actor_ref executed_by
         string action
+        string outcome
         resource_ref subject
-        json changes
+        string permission
+        int policy_contract_version
+        processing_context processing
+        uuid request_id
         uuid correlation_id
         timestamp occurred_at
     }
@@ -573,6 +630,17 @@ erDiagram
 - Audit-Einträge beantworten: wer hat wann wodurch welche geschützte Ressource
   verändert, freigegeben, exportiert oder – falls die Datenklasse es verlangt –
   eingesehen?
+- Fachliche Audit-Einträge unterscheiden den auslösenden Actor
+  (`initiated_by`) vom authentifizierten technischen Principal
+  (`executed_by`). Ein Service vertritt einen Work-Actor nicht implizit. Bei
+  einer rein technischen Aktion dürfen beide Referenzen auf denselben
+  tenantgebundenen Service oder Agenten zeigen.
+- Permission, Policy-Vertragsversion und ein erforderlicher Processing-Kontext
+  werden aus der serverseitigen Entscheidung übernommen. Requestdaten dürfen
+  Zweck oder Rechtsgrundlagenreferenz nicht selbst setzen.
+- Ein versionierter Audit-Action-Vertrag bindet Ereignistyp und Aktion an genau
+  eine Permission und Ressourcenart. Eine neue Bedeutung benötigt eine neue
+  Version; vorhandene Auditgeschichte wird nicht nachträglich umgedeutet.
 - Benachrichtigungen sind Benutzerkommunikation und dürfen aus Ereignissen
   entstehen, sind aber nicht dasselbe wie Ereignisse.
 - Audit und Ereignis sind getrennte Aufzeichnungen: Eine Änderung kann beides,
@@ -581,6 +649,18 @@ erDiagram
 - Eine kritische Fachänderung und ihr Outbox-Eintrag werden im besitzenden Modul
   atomar gespeichert. Der Core übernimmt Zustellung, Nachverfolgung und
   Abonnementverwaltung.
+- Jedes Domain-Event besitzt begrenzte Tags für Datenklassifikation,
+  Verarbeitungszweck und Aufbewahrungsklasse. Tags sind weder Rollen noch
+  Berechtigungen und dürfen keine freien Secrets oder Personendaten tragen.
+- Kafka verteilt das versionierte Event-Envelope aus der PostgreSQL-Outbox.
+  Security-Audits werden über eine atomare, minimierte Exportprojektion getrennt
+  veröffentlicht; freie Details und Session-IDs verlassen den autoritativen
+  Auditdatensatz nicht.
+- Domain-Event-, Audit- und Log-Topics sind getrennte Sicherheits- und
+  Retentionräume. Kafka-Retention ersetzt keine fachliche Aufbewahrung, kein
+  Legal Hold und keinen Auditnachweis. Details und Änderungsgrenzen beschreibt
+  [`ADR-020`](adr/ADR-020-kafka-event-audit-und-log-streaming.md); Änderungen
+  vorbehalten.
 
 ### 3.6 Konfiguration, Apps und Erweiterungen
 
@@ -859,8 +939,10 @@ Geschäftsdaten müssen ihre historische Bedeutung behalten. Deshalb gilt:
 - Fachlich abgeschlossene Belege, Entscheidungen und Workflow-Versionen werden
   nicht überschrieben, sondern durch Korrektur, Storno oder Folgeversion ergänzt.
 - Audit und Domain-Events sind unveränderlich und enthalten mindestens Zeitpunkt,
-  Mandant, Ressource und Aktion beziehungsweise Ereignistyp. Ein Akteur wird
-  ergänzt, sofern die Aktion nicht von einem Systemdienst ausgelöst wurde.
+  Mandant, Ressource und Aktion beziehungsweise Ereignistyp. Fachliche
+  Audit-Einträge erfassen immer den ausführenden Principal; ein Auslöser wird
+  getrennt erfasst und darf bei einer rein technischen Aktion mit ihm identisch
+  sein.
 - Löschung folgt einer dokumentierten Aufbewahrungs- und Anonymisierungsregel;
   „hard delete“ ist die seltene Ausnahme.
 
@@ -1010,6 +1092,7 @@ CachePort        get, set(ttl), delete, invalidate_tag
 SessionPort      create, get, revoke
 RealtimePort     publish_ephemeral, subscribe
 QueuePort        enqueue, claim, acknowledge, retry
+EventStreamPort  publish_versioned_envelope
 ```
 
 Valkey ist zunächst eine mögliche Implementierung für Cache, Sessions,
@@ -1024,6 +1107,13 @@ Hinweis oder eine `ResourceRef`; Clients laden autorisierte Daten danach erneut
 über die Business-API. Dadurch sind Valkey, NATS oder eine spätere andere
 Implementierung ohne Änderung der Fachmodule austauschbar.
 
+Kafka implementiert `EventStreamPort` als mitgelieferter persistenter
+Distributionspfad. Der Port liegt hinter der Transactional Outbox und wird nie
+direkt aus einer uncommitteten Fachtransaktion aufgerufen. Ein Broker-Ausfall
+verändert daher weder fachliche Wahrheit noch Tenant-Isolation. Topic-Layout,
+Partitionierung und Retention bleiben mit realen Last- und Complianceprofilen
+änderbar; Änderungen vorbehalten.
+
 ### 8.12 Identity-Autorität und kontrollierter Failover
 
 Das konzeptionelle HA-Modell trennt replizierte Identity-Daten vom minimalen
@@ -1037,16 +1127,16 @@ IdentityRealm
 PlatformInstance
   id, realm_id, mode, status
 
-IdentityAuthorityLease                    // Zustand des unabhängigen Witness
-  realm_id, holder_instance_id, authority_generation,
+PlatformAuthorityLease                    // Zustand des unabhängigen Witness
+  realm_id, authority_domain, holder_instance_id, authority_generation,
   lease_expires_at, fencing_token_digest
 ```
 
 `IdentityRealm` und `PlatformInstance` sind langfristige Identifikatoren und
 noch keine Festlegung auf ein physisches Schema. Die Authority-Lease gehört
 nicht als gewöhnliche Tabelle in dieselbe replizierte Datenbank, deren Ausfall
-sie entscheiden soll. Sie wird von einem unabhängigen, QDevice-artigen Identity
-Witness verwaltet.
+sie entscheiden soll. Sie wird von einem unabhängigen, QDevice-artigen Platform
+Witness verwaltet; Identity verwendet zuerst die Domain `identity-control`.
 
 - Nur der aktuelle Lease-Inhaber darf Identity-Zustand verändern oder neue
   sicherheitsrelevante Nachweise ausstellen.
@@ -1063,10 +1153,30 @@ Witness verwaltet.
   über PostgreSQL koordiniert.
 - Bei getrennten Datenbankkopien dürfen exakte Nutzungslimits und Widerrufe nur
   nach nachgewiesen verlustfreier Replikation automatisch übernommen werden.
+- Nach kontrollierter Promotion bleibt die neue aktive Instanz auch bei länger
+  ausgefallener Reserve schreibfähig, solange Witness-Lease, Fencing und die
+  übrigen Sicherheitsvoraussetzungen gültig bleiben. Die Reserve ist keine
+  Laufzeitabhängigkeit des übernommenen Betriebs.
+- Eine zurückkehrende Instanz bleibt bis zur nachgewiesenen Synchronität,
+  Schlüssel- und Schemakompatibilität sowie aktuellen Autoritätsgeneration
+  gefenced. Nach einem konfigurierten Prüfintervall `X` ist eine explizite
+  Rejoin-Entscheidung erforderlich: inkrementelles Nachziehen oder verifizierter
+  Neuaufbau. Nur ein zwischenzeitlicher Schemawechsel erfordert zusätzlich eine
+  Datenbankschema-Migration; Offline-Dauer allein nicht.
 
-Das Einzelinstanzprofil bleibt frei von dieser zusätzlichen Infrastruktur. Die
-Schnittstellen werden erst mit dem HA-Betriebsprofil implementiert und durch
-Netztrennungs-, Replikations-, Schlüsselrotations- und Rückkehrtests abgenommen.
+Das Einzelinstanzprofil bleibt frei von dieser zusätzlichen Infrastruktur. Ein
+reiner fail-closed Frischeguard darf Generation, Policy-Revision, Lease und
+Fencing bereits als internen Vertrag prüfen; er ist weder Witness noch
+Replikationsdienst. Die heutige kleine Plattformbasis ergänzt nur stabile Realm-
+und Instanzidentität, eine vertrauenswürdige lokale Snapshot-Quelle und einen
+noch nicht gerouteten Liveness-Handler ohne Authority-, Policy-, Lease- oder
+Fencing-Zustand. Die native TLS-/mTLS-Grundlage nach
+[`ADR-023`](adr/ADR-023-native-server-tls-und-transportidentitaet.md) ist davon
+getrennt bereits vorhanden. Sie bestätigt nur Transportidentitäten und erteilt
+weder Schreibhoheit noch Promotion. Die Remoteprotokoll-, Lease-, Promotion-
+und Fencing-Schnittstellen werden erst mit dem HA-Betriebsprofil implementiert und durch
+Netztrennungs-, Replikations-, Schlüsselrotations- und Rückkehrtests abgenommen;
+Änderungen vorbehalten.
 
 ---
 

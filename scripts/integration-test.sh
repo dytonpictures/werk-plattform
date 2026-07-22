@@ -38,8 +38,9 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 cleanup
-compose up --detach postgres
+compose up --detach --wait postgres kafka
 compose run --rm database-roles
 compose run --rm migrate
 compose run --rm migrate
+compose run --rm kafka-init
 compose run --rm --build integration

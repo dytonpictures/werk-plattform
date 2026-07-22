@@ -122,6 +122,31 @@ Serversynchronisation darf der Client keinen verbindlichen Abschluss anzeigen.
 Hochriskante Freigaben und Sicherheitsänderungen werden nicht offline
 entschieden.
 
+## Dokumenttransfers
+
+Clients adressieren Dokumente und veröffentlichte Versionen ausschließlich über
+die versionierte Business-API. Der erste Upload-/Downloadvertrag verwendet
+einen Backend-Transferendpunkt mit einem kurzlebigen, einmalig verbrauchbaren
+und ressourcengebundenen Ticket. Bucket, Provider, opaker Objektschlüssel und
+dauerhafte Storage-Credentials bleiben vollständig intern.
+
+Eine spätere vorsignierte Provider-URL ist kein stiller Implementierungstausch,
+sondern benötigt eine eigene Präzisierung für Widerruf, kurze TTL,
+Content-Security, Logging und die hier festgelegte Clientgrenze. Lokale
+Arbeitskopien bleiben verschlüsselte Clientzustände; erst eine erneut
+autorisierte Serververöffentlichung erzeugt eine kanonische Dokumentversion.
+Details stehen in
+[`ADR-021`](adr/ADR-021-interner-dokument-blob-und-transfervertrag.md); Änderungen
+vorbehalten.
+
+Die Dokumentoberfläche wächst gemeinsam mit den freigegebenen Serververträgen:
+zuerst Liste, Detail, Klassifikation und unveränderliche Versionshistorie,
+danach Upload-/Downloadaktionen mit sichtbaren Prüf- und Fehlerzuständen und
+erst später Arbeitskopien, Sync und Konfliktbehandlung. `unknown`, `missing`,
+Quarantäne und Policy-Ablehnung werden als echte Serverzustände dargestellt;
+der Client erfindet keinen lokalen Erfolgszustand und zeigt weder Provider noch
+opake Storage-Schlüssel an. Änderungen vorbehalten.
+
 ## Adaptive Oberfläche
 
 - Smartphone verwendet fokussierte, schrittweise Abläufe und kurze

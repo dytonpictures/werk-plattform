@@ -9,6 +9,7 @@
     <script src="/admin.js" defer></script>
   </head>
   <body>
+    <a class="skip-link" href="#main-content">Direkt zur Administration</a>
     <div class="workspace-shell" data-authenticated-page="/admin">
       <header class="workspace-header">
         <a class="brand" href="/admin#users"><span class="brand-mark"><span class="brand-mark-dot"></span></span><span class="brand-name">WERK</span><span class="brand-separator"></span><span data-account-class>Administration</span></a>
@@ -16,7 +17,7 @@
       </header>
       <div class="global-layout">
         <nav class="global-navigation" data-global-navigation aria-label="Globale Navigation"></nav>
-        <main class="workspace-main admin-workspace">
+        <main class="workspace-main admin-workspace" id="main-content">
           <p class="form-notice admin-page-notice" data-page-notice role="status" hidden></p>
 
           <section data-admin-view="users">

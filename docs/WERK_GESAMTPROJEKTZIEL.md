@@ -628,8 +628,9 @@ Eine WERK-Installation muss von einem technisch qualifizierten Administrator rep
 Das Startprofil bleibt eine einzelne Identity-Autorität. Mehrere Prozesse an
 derselben PostgreSQL-Datenbank sind Prozessredundanz, keine zweite Autorität.
 Ein späteres Active/Passive-Profil mit eigener Datenbankreplik benötigt für
-automatischen Failover einen unabhängigen QDevice-artigen Identity Witness,
-Lease, monotone Autoritätsgeneration, nachgewiesene Replikationsschranke und
+automatischen Failover die Domain `identity-control` eines unabhängigen
+QDevice-artigen Platform Witness, Lease, monotone Autoritätsgeneration,
+nachgewiesene Replikationsschranke und
 extern wirksames Fencing. Healthchecks allein dürfen niemals Schreibhoheit
 vergeben. Der verbindliche Zielvertrag steht in
 [`ADR-015`](adr/ADR-015-identity-authority-witness-und-failover.md).

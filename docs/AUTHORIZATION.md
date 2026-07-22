@@ -167,6 +167,29 @@ Tenant-Transaktion geladen. RLS begrenzt Tenant, Konto, Party, Membership und
 Organisationseinheit zusätzlich. Admin-Sessions, fremde Work-Konten und
 Sessions mit noch offenem Erst-Passwortwechsel werden abgelehnt.
 
+## Dokument- und Storage-Zugriff
+
+Dokumentzugriffe verwenden die Plattform-Policy als äußeres Gate, nicht als
+universelle Dokumentregel. Core Identity liefert Actor, Kontoart, Access Plane,
+Tenant und Assurance. Die zentrale Entscheidung prüft Ressourcentyp,
+Permission, Scope, Datenprofil und Processing-Policy. Danach darf Core Documents
+zusätzliche lokale Bedingungen wie fachliche Verknüpfung, Klassifikation,
+Dokumentstatus oder Einzelfreigabe verlangen. Eine Plattformablehnung kann dort
+nur weiter eingeschränkt und nie in eine Freigabe umgewandelt werden.
+
+Core Storage wertet keine Work-Rollen und keine App-Entitlements aus. Es nimmt
+nur eine bereits autorisierte, exakt begrenzte interne Storage-Operation an.
+Bei einer späteren Prozessgrenze authentifiziert sich der Service als eigener
+Principal; eine kurzlebige Delegation hält Work-Auslöser und Service-Ausführer
+getrennt. Ein Transfer-Ticket ist kein Generalschlüssel und ersetzt weder die
+erneute Prüfung vor Veröffentlichung noch die dokumentlokale Regel.
+
+Admin-Konten dürfen Providerkonfiguration und Betriebszustand verwalten, aber
+keine Tenant-Dokumente oder Blobinhalte lesen. Agents, Plugins und KI erhalten
+keine Storage-Credentials oder direkte Blob-Ressourcen. Der Vertrag steht in
+[`ADR-021`](adr/ADR-021-interner-dokument-blob-und-transfervertrag.md); Änderungen
+vorbehalten.
+
 ## Authentifizierungs-Audit
 
 Erfolgreiche Session-Ausstellung, Passwortänderung und Logout werden in derselben

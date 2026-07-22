@@ -6,16 +6,28 @@ source "${script_dir}/dev-env.sh"
 
 NODE="${NODE:-node}"
 service="${1:-}"
+minimum_go_major=1
+minimum_go_minor=26
+minimum_go_patch=5
+minimum_go_version="${minimum_go_major}.${minimum_go_minor}.${minimum_go_patch}"
 
 mkdir -p "${WERK_DEV_BUILD_DIR}"
 cd "${WERK_DEV_ROOT}"
 
 go_is_compatible() {
   local candidate="$1"
+  local major
+  local minor
+  local patch
   local version
   version="$("${candidate}" version 2>/dev/null)" || return 1
-  [[ "${version}" =~ go1\.([0-9]+) ]] || return 1
-  ((BASH_REMATCH[1] >= 26))
+  [[ "${version}" =~ go([0-9]+)\.([0-9]+)(\.([0-9]+))? ]] || return 1
+  major="${BASH_REMATCH[1]}"
+  minor="${BASH_REMATCH[2]}"
+  patch="${BASH_REMATCH[4]:-0}"
+  ((major > minimum_go_major ||
+    (major == minimum_go_major && minor > minimum_go_minor) ||
+    (major == minimum_go_major && minor == minimum_go_minor && patch >= minimum_go_patch)))
 }
 
 resolve_go() {
@@ -44,7 +56,7 @@ resolve_go() {
     candidate="${cached_candidates[index]}"
     if go_is_compatible "${candidate}"; then
       GO_RESOLVED="${candidate}"
-      echo "Hinweis: '${requested}' ist nicht als Go 1.26 nutzbar; verwende ${candidate}." >&2
+      echo "Hinweis: '${requested}' ist nicht als Go ${minimum_go_version} oder neuer nutzbar; verwende ${candidate}." >&2
       return
     fi
   done
@@ -53,12 +65,12 @@ resolve_go() {
     if [[ -x "${candidate}" ]] && "${candidate}" version >/dev/null 2>&1; then
       GO_RESOLVED="${candidate}"
       export GOTOOLCHAIN="${GOTOOLCHAIN:-auto}"
-      echo "Hinweis: '${requested}' ist nicht als Go 1.26 nutzbar; verwende ${candidate} mit Go-Toolchain-Auswahl." >&2
+      echo "Hinweis: '${requested}' ist nicht als Go ${minimum_go_version} oder neuer nutzbar; verwende ${candidate} mit Go-Toolchain-Auswahl." >&2
       return
     fi
   done
 
-  echo "Go 1.26 wurde nicht gefunden. Installiere Go 1.26 oder setze GO=/pfad/zu/go." >&2
+  echo "Go ${minimum_go_version} oder neuer wurde nicht gefunden. Installiere eine passende Go-Version oder setze GO=/pfad/zu/go." >&2
   exit 1
 }
 
@@ -75,6 +87,9 @@ case "${service}" in
     "${GO_RESOLVED}" build -buildvcs=false -o "${WERK_DEV_BUILD_DIR}/werk-api" ./cmd/api
     exec env \
       DATABASE_URL="${WERK_DEV_WORK_DATABASE_URL}" \
+      WERK_KAFKA_ENABLED=true \
+      WERK_KAFKA_BROKERS="${WERK_DEV_KAFKA_BROKERS}" \
+      WERK_KAFKA_CLIENT_ID=platform-api-dev \
       WERK_HTTP_ADDRESS="${WERK_DEV_API_ADDRESS}" \
       "${WERK_DEV_BUILD_DIR}/werk-api"
     ;;
@@ -83,6 +98,9 @@ case "${service}" in
     "${GO_RESOLVED}" build -buildvcs=false -o "${WERK_DEV_BUILD_DIR}/werk-worker" ./cmd/worker
     exec env \
       DATABASE_URL="${WERK_DEV_WORKER_DATABASE_URL}" \
+      WERK_KAFKA_ENABLED=true \
+      WERK_KAFKA_BROKERS="${WERK_DEV_KAFKA_BROKERS}" \
+      WERK_KAFKA_CLIENT_ID=platform-worker-dev \
       "${WERK_DEV_BUILD_DIR}/werk-worker"
     ;;
   dashboard)

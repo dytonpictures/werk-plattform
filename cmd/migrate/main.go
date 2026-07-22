@@ -1,4 +1,3 @@
-// passende dokumentation fehlt noch
 package main
 
 import (
@@ -17,7 +16,7 @@ func main() {
 		_, _ = fmt.Fprintf(os.Stderr, "invalid configuration: %v\n", err)
 		os.Exit(1)
 	}
-	logger := config.NewLogger(cfg)
+	logger := config.NewLogger(cfg, "migrate")
 	pool, err := database.NewMigrationPool(context.Background(), cfg.DatabaseURL)
 	if err != nil {
 		logger.Error("database pool could not be created", "error", err)

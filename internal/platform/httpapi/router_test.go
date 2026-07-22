@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"io"
@@ -36,6 +37,17 @@ func TestLiveHealthcheckDoesNotNeedDatabase(t *testing.T) {
 	}
 	if response.Header().Get("Content-Security-Policy") == "" || response.Header().Get("Cross-Origin-Opener-Policy") != "same-origin" {
 		t.Fatal("global browser security headers are missing")
+	}
+}
+
+func TestProductionNativeTLSAddsHSTS(t *testing.T) {
+	router := NewRouter(config.Config{Environment: "production", BuildVersion: "test"}, nil, testLogger())
+	request := httptest.NewRequest(http.MethodGet, "/health/live", nil)
+	request.TLS = &tls.ConnectionState{HandshakeComplete: true}
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Header().Get("Strict-Transport-Security") != "max-age=31536000" {
+		t.Fatal("production TLS response is missing HSTS")
 	}
 }
 

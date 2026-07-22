@@ -1,13 +1,15 @@
-// passende dokumentation fehlt noch
 package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -17,16 +19,47 @@ import (
 	"github.com/dytonpictures/werk/internal/platform/database"
 	"github.com/dytonpictures/werk/internal/platform/httpapi"
 	"github.com/dytonpictures/werk/internal/platform/identitystore"
+	"github.com/dytonpictures/werk/internal/platform/kafkastream"
+	"github.com/dytonpictures/werk/internal/platform/transportsecurity"
 	"github.com/dytonpictures/werk/internal/platform/workspacestore"
 )
 
 func main() {
-	cfg, err := config.Load()
+	cfg, err := config.LoadAPI()
 	if err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "invalid configuration: %v\n", err)
 		os.Exit(1)
 	}
-	logger := config.NewLogger(cfg)
+	logger := config.NewLogger(cfg, "api")
+	var serverTLSConfiguration *tls.Config
+	if cfg.HTTPServerTLS.Enabled() {
+		serverTLSConfiguration, err = transportsecurity.NewServerTLSConfig(cfg.HTTPServerTLS)
+		if err != nil {
+			logger.Error("HTTP server TLS material could not be loaded", "error", err)
+			os.Exit(1)
+		}
+	}
+	var kafkaClient *kafkastream.Client
+	var logSink *kafkastream.LogSink
+	if cfg.Kafka.Enabled {
+		kafkaClient, err = kafkastream.NewClient(cfg.Kafka)
+		if err != nil {
+			logger.Error("Kafka logging client could not be created", "error", err)
+			os.Exit(1)
+		}
+		exporter, exportErr := kafkastream.NewExporter(kafkaClient, cfg.Kafka)
+		if exportErr != nil {
+			logger.Error("Kafka logging exporter could not be created", "error", exportErr)
+			kafkaClient.Close()
+			os.Exit(1)
+		}
+		hostname, _ := os.Hostname()
+		instanceID := hostname + "-" + strconv.Itoa(os.Getpid())
+		logger, logSink = kafkastream.NewKafkaLogger(logger, exporter, kafkastream.LogMetadata{
+			Service: "api", Environment: cfg.Environment,
+			BuildVersion: cfg.BuildVersion, InstanceID: instanceID,
+		})
+	}
 	workDatabase, err := database.NewWork(context.Background(), cfg.DatabaseURL, "werk-api-work")
 	if err != nil {
 		logger.Error("work database could not be created", "error", err)
@@ -78,16 +111,25 @@ func main() {
 	server := &http.Server{
 		Addr:              cfg.HTTPAddress,
 		Handler:           httpapi.NewRouterWithServices(cfg, workDatabase, logger, authService, workspaceService, adminService),
+		TLSConfig:         serverTLSConfiguration,
+		ErrorLog:          slog.NewLogLogger(logger.Handler(), slog.LevelWarn),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      30 * time.Second,
 		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    64 << 10,
 	}
 
 	go func() {
-		logger.Info("api server started", "address", cfg.HTTPAddress, "environment", cfg.Environment)
-		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			logger.Error("api server stopped unexpectedly", "error", err)
+		logger.Info("api server started", "address", cfg.HTTPAddress, "environment", cfg.Environment, "transport", cfg.HTTPServerTLS.Mode)
+		var serveErr error
+		if cfg.HTTPServerTLS.Enabled() {
+			serveErr = server.ListenAndServeTLS("", "")
+		} else {
+			serveErr = server.ListenAndServe()
+		}
+		if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
+			logger.Error("api server stopped unexpectedly", "error", serveErr)
 			os.Exit(1)
 		}
 	}()
@@ -103,4 +145,15 @@ func main() {
 		os.Exit(1)
 	}
 	logger.Info("api server stopped")
+	if logSink != nil {
+		logCloseContext, logCancel := context.WithTimeout(context.Background(), cfg.Kafka.PublishTimeout+time.Second)
+		dropped := logSink.Close(logCloseContext)
+		logCancel()
+		if dropped > 0 {
+			logger.Warn("runtime logs were not exported", "dropped_records", dropped)
+		}
+	}
+	if kafkaClient != nil {
+		kafkaClient.Close()
+	}
 }

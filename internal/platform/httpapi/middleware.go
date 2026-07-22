@@ -6,7 +6,9 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/netip"
 	"runtime/debug"
 	"strings"
 	"sync/atomic"
@@ -27,6 +29,7 @@ const (
 	requestIDContextKey requestContextKey = iota
 	correlationIDContextKey
 	correlationErrorContextKey
+	secureTransportContextKey
 )
 
 var fallbackIDCounter atomic.Uint64
@@ -95,18 +98,62 @@ func correlationIDFromContext(ctx context.Context) string {
 	return value
 }
 
-func securityHeadersMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		writer.Header().Set("Cache-Control", "no-store")
-		writer.Header().Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
-		writer.Header().Set("Cross-Origin-Opener-Policy", "same-origin")
-		writer.Header().Set("Cross-Origin-Resource-Policy", "same-origin")
-		writer.Header().Set("Permissions-Policy", "camera=(), geolocation=(), microphone=()")
-		writer.Header().Set("Referrer-Policy", "no-referrer")
-		writer.Header().Set("X-Content-Type-Options", "nosniff")
-		writer.Header().Set("X-Frame-Options", "DENY")
-		next.ServeHTTP(writer, request)
-	})
+func transportSecurityMiddleware(trustedProxyCIDRs []netip.Prefix) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+			secure := request.TLS != nil
+			if !secure && trustedProxyRequest(request, trustedProxyCIDRs) {
+				forwardedProtocols := request.Header.Values("X-Forwarded-Proto")
+				secure = len(forwardedProtocols) == 1 && strings.EqualFold(strings.TrimSpace(forwardedProtocols[0]), "https")
+			}
+			ctx := context.WithValue(request.Context(), secureTransportContextKey, secure)
+			next.ServeHTTP(writer, request.WithContext(ctx))
+		})
+	}
+}
+
+func trustedProxyRequest(request *http.Request, trustedProxyCIDRs []netip.Prefix) bool {
+	host, _, err := net.SplitHostPort(request.RemoteAddr)
+	if err != nil {
+		return false
+	}
+	address, err := netip.ParseAddr(host)
+	if err != nil {
+		return false
+	}
+	for _, prefix := range trustedProxyCIDRs {
+		if prefix.Contains(address) {
+			return true
+		}
+	}
+	return false
+}
+
+func requestUsesSecureTransport(request *http.Request) bool {
+	if request.TLS != nil {
+		return true
+	}
+	secure, _ := request.Context().Value(secureTransportContextKey).(bool)
+	return secure
+}
+
+func securityHeadersMiddleware(environment string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+			writer.Header().Set("Cache-Control", "no-store")
+			writer.Header().Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
+			writer.Header().Set("Cross-Origin-Opener-Policy", "same-origin")
+			writer.Header().Set("Cross-Origin-Resource-Policy", "same-origin")
+			writer.Header().Set("Permissions-Policy", "camera=(), geolocation=(), microphone=()")
+			writer.Header().Set("Referrer-Policy", "no-referrer")
+			writer.Header().Set("X-Content-Type-Options", "nosniff")
+			writer.Header().Set("X-Frame-Options", "DENY")
+			if environment == "production" && requestUsesSecureTransport(request) {
+				writer.Header().Set("Strict-Transport-Security", "max-age=31536000")
+			}
+			next.ServeHTTP(writer, request)
+		})
+	}
 }
 
 func accessLogMiddleware(logger *slog.Logger) func(http.Handler) http.Handler {

@@ -9,6 +9,7 @@
     <script src="/work.js" defer></script>
   </head>
   <body>
+    <a class="skip-link" href="#main-content">Direkt zum Arbeitsbereich</a>
     <div class="workspace-shell" data-authenticated-page="/app">
       <header class="workspace-header">
         <a class="brand" href="/app"><span class="brand-mark"><span class="brand-mark-dot"></span></span><span class="brand-name">WERK</span><span class="brand-separator"></span><span data-account-class>Arbeitsbereich</span></a>
@@ -17,9 +18,9 @@
       </header>
       <div class="global-layout">
         <nav class="global-navigation" data-global-navigation aria-label="Globale Navigation"></nav>
-        <main class="workspace-main workspace-dashboard" data-workspace-root aria-busy="true">
+        <main class="workspace-main workspace-dashboard" id="main-content" data-workspace-root aria-busy="true">
           <p class="form-notice workspace-page-notice" data-page-notice role="status" hidden></p>
-          <div class="workspace-title-row"><div><p class="login-kicker">Mein Arbeitsbereich</p><h1>Guten Tag, <span data-profile-name>WERK Nutzer</span></h1><p><span data-workspace-tenant-name>Arbeitskontext wird geladen</span><span data-workspace-unit-context></span></p></div><span class="core-status" data-workspace-state><span class="status-dot"></span>Zugriff wird geprüft</span></div>
+          <div class="workspace-title-row"><div><p class="login-kicker">Mein Arbeitsbereich</p><h1>Guten Tag, <span data-profile-name>WERK Nutzer</span></h1><p><span data-workspace-tenant-name>Arbeitskontext wird geladen</span><span data-workspace-unit-context></span></p></div><span class="core-status" data-workspace-state><span class="status-dot"></span><span data-workspace-state-label>Zugriff wird geprüft</span></span></div>
 
           <section class="workspace-context-grid" aria-label="Aktiver Arbeitskontext">
             <article class="workspace-context-card"><span class="workspace-context-icon" aria-hidden="true">M</span><div><small>Mandant</small><strong data-workspace-tenant-name>Wird geladen</strong><span data-workspace-tenant-status>Serverseitiger Kontext</span></div></article>
@@ -41,6 +42,7 @@
               <div class="panel-heading"><div><p class="admin-breadcrumb">Sitzungskontext</p><h2>Meine Zuordnung</h2><p>Der Mandant wird aus der Work-Session übernommen und kann hier nicht gewechselt werden.</p></div></div>
               <dl class="workspace-context-details">
                 <div><dt>Mitgliedschaft</dt><dd data-workspace-membership>—</dd></div>
+                <div><dt>Organisationspfad</dt><dd><ol class="workspace-organization-path" data-workspace-organization-path aria-label="Organisationspfad"><li>Wird geladen</li></ol></dd></div>
                 <div><dt>Berechtigung</dt><dd><code data-workspace-permission>—</code></dd></div>
                 <div><dt>Mandantenkennung</dt><dd><code data-workspace-tenant-id>—</code></dd></div>
               </dl>

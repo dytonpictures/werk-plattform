@@ -39,7 +39,7 @@ echo
 echo "WERK laeuft nativ im Entwicklungsmodus:"
 echo "  Dashboard: ${WERK_DEV_DASHBOARD_ADDRESS}"
 echo "  API:       ${WERK_DEV_API_URL}"
-echo "  Beenden:   Ctrl+C (PostgreSQL und Valkey laufen weiter)"
+echo "  Beenden:   Ctrl+C (PostgreSQL, Valkey und Kafka laufen weiter)"
 echo
 
 set +e

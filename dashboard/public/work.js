@@ -21,6 +21,26 @@ function setWorkspaceText(selector, value) {
   document.querySelectorAll(selector).forEach((element) => { element.textContent = value; });
 }
 
+function renderOrganizationPath(path) {
+  const container = document.querySelector('[data-workspace-organization-path]');
+  if (!container) return;
+  const items = Array.isArray(path) ? path.filter((item) => item?.name) : [];
+  if (!items.length) {
+    const item = document.createElement('li');
+    item.textContent = 'Keine Organisationseinheit zugeordnet';
+    item.className = 'is-empty';
+    container.replaceChildren(item);
+    return;
+  }
+  container.replaceChildren(...items.map((unit, index) => {
+    const item = document.createElement('li');
+    item.textContent = unit.name;
+    item.title = workspaceUnitTypeLabel(unit.unit_type);
+    if (index === items.length - 1) item.setAttribute('aria-current', 'location');
+    return item;
+  }));
+}
+
 function renderWorkspace(overview) {
   const tenant = overview.tenant || {};
   const unit = overview.organizational_unit;
@@ -32,13 +52,15 @@ function renderWorkspace(overview) {
   setWorkspaceText('[data-workspace-permission]', overview.permission || '—');
   setWorkspaceText('[data-workspace-tenant-id]', tenant.id || '—');
   setWorkspaceText('[data-workspace-access]', 'Freigegeben');
+  renderOrganizationPath(overview.organizational_path);
   const context = document.querySelector('[data-workspace-unit-context]');
   if (context) context.textContent = unit?.name ? ` · ${unit.name}` : '';
   const state = document.querySelector('[data-workspace-state]');
   if (state) {
     state.classList.remove('is-error');
     state.querySelector('.status-dot')?.classList.add('is-ready');
-    state.lastChild.textContent = ' Zugriff bestätigt';
+    const label = state.querySelector('[data-workspace-state-label]');
+    if (label) label.textContent = 'Zugriff bestätigt';
   }
   workspaceRoot?.setAttribute('aria-busy', 'false');
 }
@@ -60,7 +82,8 @@ window.addEventListener('werk:session-ready', (event) => {
     workspaceRoot?.setAttribute('aria-busy', 'false');
     const state = document.querySelector('[data-workspace-state]');
     state?.classList.add('is-error');
-    if (state?.lastChild) state.lastChild.textContent = ' Zugriff verweigert';
+    const label = state?.querySelector('[data-workspace-state-label]');
+    if (label) label.textContent = 'Zugriff verweigert';
     showPageNotice(error.message, 'error');
   });
 });

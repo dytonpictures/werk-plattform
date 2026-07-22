@@ -32,22 +32,23 @@ bootstrap_roles() {
 
 case "${1:-up}" in
   up)
-    "${compose[@]}" up --detach --wait postgres valkey
+    "${compose[@]}" up --detach --wait postgres valkey kafka
+    "${compose[@]}" run --rm kafka-init
     bootstrap_roles
-    echo "WERK Dev-Infrastruktur ist bereit (PostgreSQL :${WERK_DEV_POSTGRES_PORT}, Valkey :${WERK_DEV_VALKEY_PORT})."
+    echo "WERK Dev-Infrastruktur ist bereit (PostgreSQL :${WERK_DEV_POSTGRES_PORT}, Valkey :${WERK_DEV_VALKEY_PORT}, Kafka :${WERK_DEV_KAFKA_PORT})."
     ;;
   roles)
     bootstrap_roles
     ;;
   status)
-    "${compose[@]}" ps postgres valkey
+    "${compose[@]}" ps postgres valkey kafka
     ;;
   logs)
-    "${compose[@]}" logs --follow postgres valkey
+    "${compose[@]}" logs --follow postgres valkey kafka
     ;;
   down)
     "${compose[@]}" down --remove-orphans
-    echo "WERK Dev-Infrastruktur wurde beendet; das PostgreSQL-Volume bleibt erhalten."
+    echo "WERK Dev-Infrastruktur wurde beendet; PostgreSQL- und Kafka-Volumes bleiben erhalten."
     ;;
   *)
     echo "Verwendung: $0 {up|roles|status|logs|down}" >&2

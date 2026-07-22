@@ -23,3 +23,17 @@ func TestEventValidation(t *testing.T) {
 		t.Fatal("unversioned event type was accepted")
 	}
 }
+
+func TestEventTagsReceiveConservativeDefaults(t *testing.T) {
+	tags := NormalizeTags(map[string]string{"organization.unit": "finance"})
+	if tags[TagDataClassification] != "restricted" || tags[TagRetentionClass] != "domain-event" {
+		t.Fatalf("unexpected default tags: %#v", tags)
+	}
+	if err := ValidateTags(tags); err != nil {
+		t.Fatalf("valid tags rejected: %v", err)
+	}
+	tags["free form"] = "not-allowed"
+	if err := ValidateTags(tags); err == nil {
+		t.Fatal("invalid tag key was accepted")
+	}
+}

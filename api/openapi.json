@@ -723,10 +723,16 @@
         }
       },
       "WorkspaceOverview": {
-        "type": "object", "additionalProperties": false, "required": ["tenant", "permission"],
+        "type": "object", "additionalProperties": false, "required": ["tenant", "organizational_path", "permission"],
         "properties": {
           "tenant": { "$ref": "#/components/schemas/WorkspaceTenant" },
           "organizational_unit": { "$ref": "#/components/schemas/WorkspaceOrganizationalUnit" },
+          "organizational_path": {
+            "type": "array",
+            "maxItems": 64,
+            "description": "Aktive Organisationseinheiten vom obersten Kontext bis zur direkten Mitgliedschaft; ausschließlich serverseitig im Session-Tenant aufgelöst.",
+            "items": { "$ref": "#/components/schemas/WorkspaceOrganizationalUnit" }
+          },
           "membership_type": { "type": "string" },
           "permission": { "type": "string", "const": "core.workspace.access" }
         }

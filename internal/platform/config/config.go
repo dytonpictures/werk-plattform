@@ -5,15 +5,21 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/netip"
 	"net/url"
 	"os"
 	"strconv"
 	"strings"
+	"time"
+
+	"github.com/dytonpictures/werk/internal/platform/transportsecurity"
 )
 
 type Config struct {
 	Environment             string
 	HTTPAddress             string
+	HTTPServerTLS           transportsecurity.ServerOptions
+	HTTPTrustedProxyCIDRs   []netip.Prefix
 	DatabaseURL             string
 	IdentityDatabaseURL     string
 	AdminDatabaseURL        string
@@ -26,16 +32,52 @@ type Config struct {
 	AllowedOrigins          []string
 	WorkerConcurrency       int
 	BuildVersion            string
+	Kafka                   KafkaConfig
+}
+
+type KafkaConfig struct {
+	Enabled            bool
+	Brokers            []string
+	ClientID           string
+	DomainEventsTopic  string
+	SecurityAuditTopic string
+	RuntimeLogsTopic   string
+	TLS                bool
+	TLSCAFile          string
+	TLSCertFile        string
+	TLSKeyFile         string
+	TLSServerName      string
+	SASLMechanism      string
+	SASLUsername       string
+	SASLPassword       string
+	PublishTimeout     time.Duration
+	AuditConcurrency   int
 }
 
 func Load() (Config, error) {
 	return load(os.LookupEnv)
 }
 
-func NewLogger(cfg Config) *slog.Logger {
-	return slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+// LoadAPI loads shared platform configuration and additionally enforces the
+// native HTTP server transport requirements. Non-server commands intentionally
+// use Load so they never need access to a server private key.
+func LoadAPI() (Config, error) {
+	return loadAPI(os.LookupEnv)
+}
+
+func NewLogger(cfg Config, component ...string) *slog.Logger {
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 		Level: level(cfg.Environment),
 	}))
+	service := "platform"
+	if len(component) > 0 && stableConfigKey(component[0]) {
+		service = component[0]
+	}
+	return logger.With(
+		"service", service,
+		"environment", cfg.Environment,
+		"build_version", cfg.BuildVersion,
+	)
 }
 
 type lookupEnvironment func(string) (string, bool)
@@ -48,6 +90,14 @@ func load(lookup lookupEnvironment) (Config, error) {
 
 	httpAddress := value(lookup, "WERK_HTTP_ADDRESS", ":8080")
 	if err := validateHTTPAddress(httpAddress); err != nil {
+		return Config{}, err
+	}
+	httpServerTLS, err := loadHTTPServerTLS(lookup)
+	if err != nil {
+		return Config{}, err
+	}
+	httpTrustedProxyCIDRs, err := parseTrustedProxyCIDRs(value(lookup, "WERK_HTTP_TRUSTED_PROXY_CIDRS", ""))
+	if err != nil {
 		return Config{}, err
 	}
 
@@ -197,10 +247,16 @@ func load(lookup lookupEnvironment) (Config, error) {
 	if err != nil || workerConcurrency < 1 || workerConcurrency > 128 {
 		return Config{}, fmt.Errorf("WERK_WORKER_CONCURRENCY must be between 1 and 128")
 	}
+	kafka, err := loadKafkaConfig(lookup, environment)
+	if err != nil {
+		return Config{}, err
+	}
 
 	return Config{
 		Environment:             environment,
 		HTTPAddress:             httpAddress,
+		HTTPServerTLS:           httpServerTLS,
+		HTTPTrustedProxyCIDRs:   httpTrustedProxyCIDRs,
 		DatabaseURL:             databaseURL,
 		IdentityDatabaseURL:     identityDatabaseURL,
 		AdminDatabaseURL:        adminDatabaseURL,
@@ -213,7 +269,169 @@ func load(lookup lookupEnvironment) (Config, error) {
 		AllowedOrigins:          allowedOrigins,
 		WorkerConcurrency:       workerConcurrency,
 		BuildVersion:            value(lookup, "WERK_BUILD_VERSION", "dev"),
+		Kafka:                   kafka,
 	}, nil
+}
+
+func loadAPI(lookup lookupEnvironment) (Config, error) {
+	configuration, err := load(lookup)
+	if err != nil {
+		return Config{}, err
+	}
+	if configuration.Environment == "production" && !configuration.HTTPServerTLS.Enabled() {
+		return Config{}, fmt.Errorf("WERK_HTTP_TLS_MODE must be tls or mtls for the production API server")
+	}
+	return configuration, nil
+}
+
+func loadHTTPServerTLS(lookup lookupEnvironment) (transportsecurity.ServerOptions, error) {
+	options := transportsecurity.ServerOptions{
+		Mode:            transportsecurity.ServerMode(strings.ToLower(value(lookup, "WERK_HTTP_TLS_MODE", string(transportsecurity.ServerDisabled)))),
+		CertificateFile: value(lookup, "WERK_HTTP_TLS_CERT_FILE", ""),
+		PrivateKeyFile:  value(lookup, "WERK_HTTP_TLS_KEY_FILE", ""),
+		ClientCAFile:    value(lookup, "WERK_HTTP_TLS_CLIENT_CA_FILE", ""),
+	}
+	if err := options.Validate(); err != nil {
+		return transportsecurity.ServerOptions{}, fmt.Errorf("invalid HTTP server TLS configuration: %w", err)
+	}
+	return options, nil
+}
+
+func parseTrustedProxyCIDRs(configured string) ([]netip.Prefix, error) {
+	if configured == "" {
+		return nil, nil
+	}
+	prefixes := make([]netip.Prefix, 0, 2)
+	for _, entry := range strings.Split(configured, ",") {
+		prefix, err := netip.ParsePrefix(strings.TrimSpace(entry))
+		if err != nil || prefix.Bits() == 0 {
+			return nil, fmt.Errorf("WERK_HTTP_TRUSTED_PROXY_CIDRS contains an invalid network")
+		}
+		prefixes = append(prefixes, prefix.Masked())
+	}
+	return prefixes, nil
+}
+
+func loadKafkaConfig(lookup lookupEnvironment, environment string) (KafkaConfig, error) {
+	enabled, err := booleanValue(lookup, "WERK_KAFKA_ENABLED", false)
+	if err != nil {
+		return KafkaConfig{}, err
+	}
+	tlsEnabled, err := booleanValue(lookup, "WERK_KAFKA_TLS", false)
+	if err != nil {
+		return KafkaConfig{}, err
+	}
+	brokersValue := value(lookup, "WERK_KAFKA_BROKERS", "127.0.0.1:59092")
+	brokers := make([]string, 0, 3)
+	for _, candidate := range strings.Split(brokersValue, ",") {
+		broker := strings.TrimSpace(candidate)
+		if broker == "" || strings.Contains(broker, "://") {
+			return KafkaConfig{}, fmt.Errorf("WERK_KAFKA_BROKERS must contain host:port addresses without a URL scheme")
+		}
+		host, port, splitErr := net.SplitHostPort(broker)
+		portNumber, portErr := strconv.Atoi(port)
+		if splitErr != nil || host == "" || portErr != nil || portNumber < 1 || portNumber > 65535 {
+			return KafkaConfig{}, fmt.Errorf("WERK_KAFKA_BROKERS contains an invalid broker address")
+		}
+		brokers = append(brokers, broker)
+	}
+	if len(brokers) == 0 {
+		return KafkaConfig{}, fmt.Errorf("WERK_KAFKA_BROKERS must contain at least one broker")
+	}
+
+	topics := []struct {
+		name  string
+		value string
+	}{
+		{"WERK_KAFKA_DOMAIN_EVENTS_TOPIC", value(lookup, "WERK_KAFKA_DOMAIN_EVENTS_TOPIC", "platform.domain-events.v1")},
+		{"WERK_KAFKA_SECURITY_AUDIT_TOPIC", value(lookup, "WERK_KAFKA_SECURITY_AUDIT_TOPIC", "platform.security-audit.v1")},
+		{"WERK_KAFKA_RUNTIME_LOGS_TOPIC", value(lookup, "WERK_KAFKA_RUNTIME_LOGS_TOPIC", "platform.runtime-logs.v1")},
+	}
+	for _, topic := range topics {
+		if !validKafkaName(topic.value, 249) {
+			return KafkaConfig{}, fmt.Errorf("%s contains an invalid topic name", topic.name)
+		}
+	}
+
+	clientID := value(lookup, "WERK_KAFKA_CLIENT_ID", "platform-"+environment)
+	if !validKafkaName(clientID, 128) {
+		return KafkaConfig{}, fmt.Errorf("WERK_KAFKA_CLIENT_ID contains an invalid client ID")
+	}
+	mechanism := strings.ToLower(value(lookup, "WERK_KAFKA_SASL_MECHANISM", "none"))
+	if mechanism != "none" && mechanism != "plain" && mechanism != "scram-sha-256" && mechanism != "scram-sha-512" {
+		return KafkaConfig{}, fmt.Errorf("WERK_KAFKA_SASL_MECHANISM must be none, plain, scram-sha-256, or scram-sha-512")
+	}
+	username := value(lookup, "WERK_KAFKA_SASL_USERNAME", "")
+	password := value(lookup, "WERK_KAFKA_SASL_PASSWORD", "")
+	if mechanism != "none" && (username == "" || password == "") {
+		return KafkaConfig{}, fmt.Errorf("Kafka SASL requires WERK_KAFKA_SASL_USERNAME and WERK_KAFKA_SASL_PASSWORD")
+	}
+	certFile := value(lookup, "WERK_KAFKA_TLS_CERT_FILE", "")
+	keyFile := value(lookup, "WERK_KAFKA_TLS_KEY_FILE", "")
+	if (certFile == "") != (keyFile == "") {
+		return KafkaConfig{}, fmt.Errorf("Kafka client TLS certificate and key must be configured together")
+	}
+	if enabled && environment == "production" {
+		if !tlsEnabled {
+			return KafkaConfig{}, fmt.Errorf("WERK_KAFKA_TLS must be true when Kafka is enabled in production")
+		}
+		if mechanism == "none" && certFile == "" {
+			return KafkaConfig{}, fmt.Errorf("production Kafka requires SASL or a client TLS certificate")
+		}
+	}
+	publishTimeoutSeconds, err := strconv.Atoi(value(lookup, "WERK_KAFKA_PUBLISH_TIMEOUT_SECONDS", "10"))
+	if err != nil || publishTimeoutSeconds < 1 || publishTimeoutSeconds > 120 {
+		return KafkaConfig{}, fmt.Errorf("WERK_KAFKA_PUBLISH_TIMEOUT_SECONDS must be between 1 and 120")
+	}
+	auditConcurrency, err := strconv.Atoi(value(lookup, "WERK_KAFKA_AUDIT_CONCURRENCY", "1"))
+	if err != nil || auditConcurrency < 1 || auditConcurrency > 16 {
+		return KafkaConfig{}, fmt.Errorf("WERK_KAFKA_AUDIT_CONCURRENCY must be between 1 and 16")
+	}
+
+	return KafkaConfig{
+		Enabled:            enabled,
+		Brokers:            brokers,
+		ClientID:           clientID,
+		DomainEventsTopic:  topics[0].value,
+		SecurityAuditTopic: topics[1].value,
+		RuntimeLogsTopic:   topics[2].value,
+		TLS:                tlsEnabled,
+		TLSCAFile:          value(lookup, "WERK_KAFKA_TLS_CA_FILE", ""),
+		TLSCertFile:        certFile,
+		TLSKeyFile:         keyFile,
+		TLSServerName:      value(lookup, "WERK_KAFKA_TLS_SERVER_NAME", ""),
+		SASLMechanism:      mechanism,
+		SASLUsername:       username,
+		SASLPassword:       password,
+		PublishTimeout:     time.Duration(publishTimeoutSeconds) * time.Second,
+		AuditConcurrency:   auditConcurrency,
+	}, nil
+}
+
+func booleanValue(lookup lookupEnvironment, key string, fallback bool) (bool, error) {
+	configured, ok := lookup(key)
+	if !ok || strings.TrimSpace(configured) == "" {
+		return fallback, nil
+	}
+	parsed, err := strconv.ParseBool(strings.TrimSpace(configured))
+	if err != nil {
+		return false, fmt.Errorf("%s must be a boolean", key)
+	}
+	return parsed, nil
+}
+
+func validKafkaName(candidate string, maximum int) bool {
+	if candidate == "" || len(candidate) > maximum || candidate == "." || candidate == ".." {
+		return false
+	}
+	for _, character := range candidate {
+		if (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') ||
+			(character >= '0' && character <= '9') || character == '.' || character == '_' || character == '-' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func parseMFAKeyring(value string) (map[string][]byte, error) {
@@ -300,8 +518,8 @@ func validateProductionDatabaseCredentials(databaseURL string) error {
 		return fmt.Errorf("the PostgreSQL bootstrap role must not be used by a production service")
 	}
 	sslMode := strings.ToLower(strings.TrimSpace(parsed.Query().Get("sslmode")))
-	if sslMode != "require" && sslMode != "verify-ca" && sslMode != "verify-full" {
-		return fmt.Errorf("production database URLs must require TLS")
+	if sslMode != "verify-full" {
+		return fmt.Errorf("production database URLs must use sslmode=verify-full")
 	}
 	developmentPasswords := map[string]struct{}{
 		"werk":              {},

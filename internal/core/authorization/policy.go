@@ -20,6 +20,7 @@ const (
 	ScopeTenant             ScopeType = "tenant"
 	ScopeOrganizationalUnit ScopeType = "organizational-unit"
 	ScopeResource           ScopeType = "resource"
+	//	ScopeInstanz			ScopeType = "instanz"
 )
 
 type Resource struct {

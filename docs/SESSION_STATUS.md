@@ -168,17 +168,18 @@ Principal auf der technischen `service`-Zugriffsebene.
   bereits Sperren, Widerrufe und atomare Sicherheitszähler.
 - Eine zweite Instanz mit eigener Datenbankkopie bleibt eine Active/Passive-
   Replik desselben Identity-Realms und keine unabhängige Identity-Quelle.
-- Automatischer Failover benötigt einen unabhängigen, QDevice-artigen Identity
-  Witness. Ein Healthcheck ist nur ein Signal und darf keine Schreibhoheit
-  vergeben.
+- Automatischer Failover benötigt die Domain `identity-control` eines
+  unabhängigen, QDevice-artigen Platform Witness. Ein Healthcheck ist nur ein
+  Signal und darf keine Schreibhoheit vergeben.
 - Die Reserve darf erst nach abgelaufener Lease, exklusiv vergebener höherer
   Autoritätsgeneration, erfüllter Replikationsschranke und Fencing der alten
   Hauptinstanz übernehmen.
 - Ohne erreichbaren Witness bleibt ein Wechsel manuell und fail-closed. Der
   Witness speichert keine Konten, Credentials, Schlüssel, Tenants oder
   Fachdaten.
-- Das Einzelinstanzprofil benötigt heute keine Witness-Infrastruktur. Umsetzung
-  und Failover-Drills gehören in die spätere HA-/Produktreifephase.
+- Das Einzelinstanzprofil benötigt heute keine Witness-Infrastruktur. ADR-022
+  trennt `single`, `dual-cloud` und `hybrid` von der Authority-Koordination;
+  Umsetzung und Failover-Drills gehören in die spätere HA-/Produktreifephase.
 
 ## Nächster zwingender Schritt
 

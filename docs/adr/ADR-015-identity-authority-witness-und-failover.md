@@ -23,6 +23,11 @@ Zugriffsebene aus
 unverändert. Dieses ADR ergänzt ausschließlich die betriebliche Autorität über
 diesen Zustand.
 
+[`ADR-022`](ADR-022-deploymentprofile-und-platform-witness.md) verallgemeinert
+die betriebliche Komponente zum domänengebundenen Platform Witness. Der in
+diesem ADR beschriebene Identity Witness ist dessen erste Authority-Domain
+`identity-control`; die strengeren Identity-Regeln bleiben unverändert.
+
 Ein Healthcheck kann nur melden, dass ein anderer Prozess nicht erreichbar ist.
 Er kann nicht unterscheiden, ob der Prozess ausgefallen oder lediglich die
 Netzverbindung unterbrochen ist. Ein automatischer Failover allein aufgrund
@@ -44,17 +49,19 @@ Schreibhoheit. Diese Begriffe werden vor einer HA-Implementierung in
 Konfiguration, Betriebszustand und relevanten Sicherheitsnachweisen
 versioniert eingeführt.
 
-### QDevice-artiger Identity Witness
+### QDevice-artige Identity-Domain des Platform Witness
 
 Ein automatischer Failover zwischen zwei Instanzen benötigt eine unabhängige
-dritte Stimme: den **Identity Witness**. Er entspricht funktional einem
-QDevice, ist aber ein herstellerneutraler Plattformvertrag.
+dritte Stimme: die Domain `identity-control` des **Platform Witness**. Sie
+entspricht funktional einem QDevice, ist aber ein herstellerneutraler
+Plattformvertrag.
 
 Der Witness speichert ausschließlich minimalen Quorumzustand:
 
 ```text
-IdentityAuthorityLease
+PlatformAuthorityLease
   realm_id
+  authority_domain = identity-control
   holder_instance_id
   authority_generation
   lease_expires_at
@@ -107,6 +114,32 @@ Der Witness bleibt im heutigen Einzelinstanzprofil vollständig optional. Seine
 spätere Aktivierung darf keine neue Kontoart, Audience oder fachliche
 Berechtigung erzeugen.
 
+### Fail-closed Policy-Frischeguard
+
+Der kleine interne Vertrag unter `internal/platform/sync` prüft bereits, ob
+eine serverseitig aufgelöste Policy-Anfrage exakt zur erwarteten Instanz, zum
+Realm, zur `authority_generation` und zur Policy-Revision passt. Danach wird
+weiterhin ausschließlich der kanonische Core-Autorisierungsvertrag ausgewertet.
+Bei `replicated-active-passive` verlangt der Guard zusätzlich eine noch gültige
+Lease und ein verifiziertes Fencing-Token. Abweichung, Ablauf oder Fencing
+führen immer zu `deny`.
+
+Dieser Guard ist kein Replikations-, Konsens- oder Failoverdienst und sein
+`PolicyRequest` ist kein Credential. Er erwirbt keine Lease, prüft keinen
+Healthcheck und überträgt keine Identitäts- oder Policy-Daten. Im
+Shared-Database-Profil müssen Policy-Revision und Policy-Eingaben aus derselben
+autoritativen PostgreSQL-Sicht stammen.
+
+Die kleine Plattformbasis beschreibt zusätzlich stabile Realm- und
+Instanzidentität, kapselt die Auswertung mit einer vertrauenswürdigen lokalen
+`AuthoritySnapshotSource` und stellt einen noch nicht gerouteten
+`platform.instance-health.v1`-Liveness-Handler bereit. Dessen Antwort enthält
+keine Realm-ID, Policy-Revision, Autoritätsgeneration, Lease- oder
+Fencing-Aussage. Ein Quellen- oder Kontextfehler erzeugt bereits im Client eine
+explizite Deny-Entscheidung. Remote-HTTP-/Witness-Transport, gegenseitige
+Authentifizierung, Replay-Schutz, Lease-Erwerb und Promotion bleiben Teil des
+späteren HA-Betriebsprofils; Änderungen vorbehalten.
+
 ### Degradierter Betrieb
 
 Bereits ausgestellte kurzlebige Nachweise dürfen während einer begrenzten,
@@ -121,6 +154,46 @@ Klartext-Credentials werden niemals repliziert. Erforderliche private
 Schlüssel und MFA-Schlüsselringe werden ausschließlich verschlüsselt und nach
 einem eigenen Rotations- und Wiederherstellungsvertrag an die Reserve
 übertragen. Öffentliche Prüfschlüssel dürfen kontrolliert gecacht werden.
+
+### Fortgesetzter Failoverbetrieb und Wiederaufnahme
+
+Nach einer kontrollierten Promotion muss die neue aktive Instanz auch dann
+weiterarbeiten können, wenn die ausgefallene Plattforminstanz noch nicht
+zurückgekehrt ist. Die abwesende Reserve allein ist kein Grund, den bereits
+übernommenen Betrieb wieder zu sperren. Voraussetzung bleiben eine erneuerbare
+Witness-Lease, wirksames Fencing der alten Instanz, die bei der Promotion
+nachgewiesene Replikationsschranke und verfügbare kritische Abhängigkeiten. Fällt
+dagegen auch der Witness aus, darf die aktive Instanz nur innerhalb ihres noch
+gültigen Lease-Vertrags schreiben; ein Healthcheck verlängert diese Autorität
+nicht. Diese Regel gilt unabhängig davon, ob die Fehlerdomänen in zwei Clouds
+oder in einem hybriden Betrieb liegen.
+
+Eine zurückkehrende Instanz wird niemals allein durch Erreichbarkeit wieder zur
+Reserve oder Autorität. Sie bleibt gefenced und durchläuft einen
+Wiederaufnahme-Check:
+
+- Sind erforderliche WAL-/Replikationsjournale, Schlüsselstände,
+  Autoritätsgeneration und Schema kompatibel, darf sie kontrolliert nachziehen.
+- Überschreitet die Abwesenheit ein konfiguriertes Prüfintervall `X`, erfolgt
+  keine automatische Wiederaufnahme. Der Betreiber beziehungsweise spätere
+  Recovery-Controller entscheidet anhand nachweisbarer Replikations- und
+  Integritätsdaten zwischen inkrementellem Nachziehen und vollständigem
+  Neuaufbau der Reserve.
+- Fehlen benötigte Journale, wurden relevante Schlüsselrotationen verpasst,
+  besteht ein unbekannter Divergenzzustand oder ist die Integrität nicht
+  beweisbar, wird die Reserve aus einer verifizierten aktuellen Quelle neu
+  aufgebaut. Ein alter Datenstand wird nicht blind zurückgespielt.
+- Eine Datenbankschema-Migration ist nur erforderlich, wenn sich während der
+  Abwesenheit die kompatible Software-/Schemaversion geändert hat. Eine lange
+  Offline-Zeit allein ist noch keine Schema-Migration; meistens handelt es sich
+  um Resynchronisierung oder Re-Seeding.
+
+`X` wird nicht als willkürlicher Zeitwert festgeschrieben. Es muss vor dem
+HA-Betrieb aus WAL-/Journal-Aufbewahrung, Schlüsselrotation, Widerrufsfenstern,
+RPO/RTO, maximaler Aufholzeit und getesteter Schemaversionierung abgeleitet
+werden. Erst nach erfolgreicher Daten-, Schlüssel-, Generation- und
+Integritätsprüfung erhält die zurückgekehrte Instanz den Zustand
+`reserve-ready`; Änderungen vorbehalten.
 
 ### Zähler und Replikationskonsistenz
 

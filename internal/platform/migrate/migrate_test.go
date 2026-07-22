@@ -284,3 +284,99 @@ func TestOrganizationalAppAccessFoundationIsTenantBoundAndExplicit(t *testing.T)
 	}
 	t.Fatal("organizational app access migration is not embedded")
 }
+
+func TestDocumentStorageFoundationIsTenantBoundAndInactive(t *testing.T) {
+	migrations, err := loadMigrations()
+	if err != nil {
+		t.Fatalf("load migrations: %v", err)
+	}
+	for _, migration := range migrations {
+		if migration.name != "000029_document_storage_foundation.sql" {
+			continue
+		}
+		for _, fragment := range []string{
+			"('core.documents', 'core', 'Dokumente')",
+			"('core.storage', 'core', 'Objektspeicher')",
+			"core.documents.document-version",
+			"CREATE TABLE werk_core.storage_blobs",
+			"CREATE TABLE werk_core.storage_blob_locations",
+			"CREATE TABLE werk_core.documents",
+			"CREATE TABLE werk_core.document_versions",
+			"CREATE TABLE werk_core.document_classification_revisions",
+			"FOREIGN KEY (tenant_id, blob_id)",
+			"document_versions_protect_immutable",
+			"document_classification_revisions_protect_immutable",
+			"documents_validate_initial_records",
+			"documents_validate_insert",
+			"storage_blob_locations_validate_blob_consistency",
+			"FOR UPDATE;",
+			"activated storage location verification is immutable",
+			"state IN ('quarantined', 'available', 'rejected', 'missing', 'unknown')",
+			"AS RESTRICTIVE TO werk_work_runtime, werk_service_runtime",
+			"REVOKE ALL ON",
+			"Physical deletion is intentionally not part of this foundation",
+		} {
+			if !strings.Contains(migration.contents, fragment) {
+				t.Errorf("document/storage migration is missing %q", fragment)
+			}
+		}
+		for _, forbidden := range []string{
+			"CREATE TABLE werk_core.storage_transfer_tickets",
+			"CREATE TABLE werk_core.collaboration",
+			"GRANT DELETE ON",
+		} {
+			if strings.Contains(migration.contents, forbidden) {
+				t.Errorf("document/storage foundation already contains deferred capability %q", forbidden)
+			}
+		}
+		return
+	}
+	t.Fatal("document/storage foundation migration is not embedded")
+}
+
+func TestBusinessAuditContractKeepsDualActorsAndServerPolicy(t *testing.T) {
+	migrations, err := loadMigrations()
+	if err != nil {
+		t.Fatalf("load migrations: %v", err)
+	}
+	for _, migration := range migrations {
+		if migration.name != "000030_business_audit_contract.sql" {
+			continue
+		}
+		for _, fragment := range []string{
+			"ADD COLUMN initiated_by_account_id uuid NULL",
+			"ADD COLUMN executed_by_account_id uuid NULL",
+			"ADD COLUMN subject_kind text NULL",
+			"ADD COLUMN policy_contract_version bigint NULL",
+			"security_audit_business_shape_check",
+			"CREATE TABLE werk_core.audit_action_contracts",
+			"core.documents.document-published.v1",
+			"REFERENCES werk_core.permission_resource_types(permission_id, resource_kind)",
+			"action_contract.event_type = NEW.event_type",
+			"action_contract.resource_kind = NEW.subject_kind",
+			"audit_action_contracts_protect_meaning",
+			"OLD.status = 'active'",
+			"NEW.status = 'retired'",
+			"audit action contract meaning is immutable",
+			"validate_business_audit_entry",
+			"registration.boundary = NEW.subject_boundary",
+			"business audit policy snapshot does not match active server policy",
+			"security_audit_protect_immutable",
+			"GRANT INSERT ON werk_core.security_audit_events TO werk_service_runtime",
+			"DROP POLICY security_audit_identity_insert",
+			"event_type LIKE 'identity.%'",
+			"DROP POLICY security_audit_admin_insert",
+			"TO werk_admin_runtime",
+			"tenant_id = werk_security.current_tenant_id()",
+			"subject_tenant_id = werk_security.current_tenant_id()",
+			"event_type LIKE 'core.documents.%' AND action_key LIKE 'core.documents.%'",
+			"Titles, object paths, transfer tickets, hashes, and credentials are forbidden",
+		} {
+			if !strings.Contains(migration.contents, fragment) {
+				t.Errorf("business audit migration is missing %q", fragment)
+			}
+		}
+		return
+	}
+	t.Fatal("business audit migration is not embedded")
+}

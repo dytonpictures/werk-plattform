@@ -83,8 +83,13 @@ seine eigenen Container, Netze, Volumes und temporären Dateien.
 - Dieser erste Baustein ist ein verschlüsseltes logisches PostgreSQL-Backup. Er
   ersetzt noch kein WAL-/PITR-Konzept für ein späteres engeres RPO.
 - Dokumente im künftigen Object Storage benötigen ein getrenntes, konsistent
-  koordiniertes Backup. Sie werden nicht vorgezogen, solange der Object Store
-  noch nicht Teil des Plattformfundaments ist.
+  koordiniertes Backup. Datenmodell und tenantgesicherte Metadaten dürfen als
+  Fundament vorbereitet werden; ein produktiver Bytepfad wird aber nicht
+  freigegeben, solange Object Store, verschlüsseltes Objektmanifest,
+  Reconciliation und gemeinsamer Restore-Test nicht Teil des Betriebsprofils
+  sind. Den Ausbauvertrag beschreibt
+  [`ADR-021`](ADR-021-interner-dokument-blob-und-transfervertrag.md); Änderungen
+  vorbehalten.
 - Der Verlust aller privaten `age`-Identitäten macht das Backup unbrauchbar.
   Recovery-Schlüssel müssen deshalb getrennt und mindestens einmal off-site
   verwahrt werden.

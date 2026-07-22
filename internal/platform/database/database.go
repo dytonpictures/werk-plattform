@@ -17,6 +17,7 @@ const (
 	WorkRuntimeRole     = "werk_work_runtime"
 	IdentityRuntimeRole = "werk_identity_runtime"
 	AdminRuntimeRole    = "werk_admin_runtime"
+	ServiceRuntimeRole  = "werk_service_runtime"
 	WorkerRuntimeRole   = "werk_worker_runtime"
 	ownerRole           = "werk_owner"
 )
@@ -42,6 +43,10 @@ type IdentityDB struct {
 type WorkDB struct{ runtime *RuntimeDB }
 
 type AdminDB struct{ runtime *RuntimeDB }
+
+// ServiceDB is the tenant-bound runtime for authenticated platform services.
+// It exposes no installation-wide operation and never infers a tenant.
+type ServiceDB struct{ runtime *RuntimeDB }
 
 // WorkerDB has explicit global operations for worker-owned infrastructure such
 // as the outbox. Business data remains accessible only through tenant methods.
@@ -173,6 +178,26 @@ func (database *AdminDB) withinInstallation(ctx context.Context, accessMode pgx.
 	return nil
 }
 func (database *AdminDB) WithinTenantWrite(ctx context.Context, tenantID tenancy.TenantID, operation TenantOperation) error {
+	return database.runtime.WithinTenantWrite(ctx, tenantID, operation)
+}
+
+func NewService(ctx context.Context, databaseURL, applicationName string) (*ServiceDB, error) {
+	runtime, err := NewRuntime(ctx, databaseURL, RuntimeOptions{
+		ExpectedRole:    ServiceRuntimeRole,
+		ApplicationName: applicationName,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &ServiceDB{runtime: runtime}, nil
+}
+
+func (database *ServiceDB) Close()                         { database.runtime.Close() }
+func (database *ServiceDB) Ping(ctx context.Context) error { return database.runtime.Ping(ctx) }
+func (database *ServiceDB) WithinTenantRead(ctx context.Context, tenantID tenancy.TenantID, operation TenantOperation) error {
+	return database.runtime.WithinTenantRead(ctx, tenantID, operation)
+}
+func (database *ServiceDB) WithinTenantWrite(ctx context.Context, tenantID tenancy.TenantID, operation TenantOperation) error {
 	return database.runtime.WithinTenantWrite(ctx, tenantID, operation)
 }
 

@@ -207,13 +207,39 @@ func assertOutboxBoundary(t *testing.T, ctx context.Context, workDatabase *Runti
 	if err == nil {
 		t.Fatal("tenant producer enqueued an event for another tenant")
 	}
+	err = workDatabase.WithinTenantWrite(ctx, tenantA, func(ctx context.Context, tx TenantTx) error {
+		_, err := tx.Exec(ctx, `
+			INSERT INTO werk_core.outbox_events (
+				id, tenant_id, event_type, producer, subject_kind, subject_id,
+				partition_key, occurred_at, correlation_id, tags, payload
+			) VALUES (
+				'0196f000-0000-7000-8000-000000000093', $1::uuid,
+				'core.integration.created.v1', 'core.integration', 'integration.item',
+				'0196f000-0000-7000-8000-000000000093', 'integration:93', now(),
+				'0196f000-0000-7000-8000-000000000093',
+				'{"data.classification":"restricted","processing.purpose":"test","retention.class":"test","nested":{"forbidden":true}}'::jsonb,
+				'{}'::jsonb
+			)
+		`, tenantA.String())
+		return err
+	})
+	if err == nil {
+		t.Fatal("tenant producer enqueued an event with invalid nested tags")
+	}
 	err = workerDatabase.WithinGlobalWrite(ctx, func(ctx context.Context, tx TenantTx) error {
 		var count int
-		if err := tx.QueryRow(ctx, `SELECT count(*) FROM werk_core.outbox_events WHERE id = $1::uuid`, eventID).Scan(&count); err != nil {
+		var classification string
+		if err := tx.QueryRow(ctx, `
+			SELECT count(*), min(tags ->> 'data.classification')
+			FROM werk_core.outbox_events WHERE id = $1::uuid
+		`, eventID).Scan(&count, &classification); err != nil {
 			return err
 		}
 		if count != 1 {
 			return fmt.Errorf("worker outbox count = %d, want 1", count)
+		}
+		if classification != "restricted" {
+			return fmt.Errorf("outbox default classification = %q, want restricted", classification)
 		}
 		return nil
 	})

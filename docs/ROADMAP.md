@@ -35,7 +35,7 @@ Betrieb werden vor CRM, HRM oder Finance umgesetzt.
   IDs und Fehler nach RFC 9457 festlegen.
 - ADRs für Mandant/RLS, Kontoarten, API-/Event-Versionierung, Outbox/Queue,
   Object Storage, Plugins, KI, Backup, native Clients und das spätere
-  Identity-HA-/Witness-Modell erstellen.
+  domänengebundene Platform-Witness-Modell erstellen.
 - Health-, Readiness- und Metrik-Endpunkte sowie ein Restore-Test-Skript liefern.
 
 **Abnahme:** Eine neue Instanz startet per dokumentiertem Befehl, führt
@@ -55,9 +55,10 @@ das definierte Single-Host-Startprofil abgeschlossen. Off-Site-/WAL-/PITR-
 Sicherungen und der betriebliche
 Restore-Drill bleiben bewusst spätere Betriebsreife-Ausbaustufen.
 
-Das spätere Active/Passive-Identity-Modell ist mit ADR-015 auf eine einzige
-schreibende Autorität, einen unabhängigen QDevice-artigen Witness, Lease,
-Autoritätsgeneration und Fencing festgelegt, aber noch nicht implementiert.
+Das spätere Active/Passive-Identity-Modell ist mit ADR-015 und ADR-022 auf eine
+einzige schreibende Autorität, die Domain `identity-control` eines unabhängigen
+QDevice-artigen Platform Witness, Lease, Autoritätsgeneration und Fencing
+festgelegt, aber noch nicht implementiert.
 
 Eine erste SemVer-gesteuerte Release-Pipeline veröffentlicht nach den
 vollständigen CI-, Migrations- und Restore-Prüfungen Linux-Artefakte und
@@ -193,6 +194,10 @@ offen. Änderungen vorbehalten.
   registrieren; Kontoart und Tenant-Grenzen im Vertrag explizit machen.
 - Versionierte Domain-Events, Transactional Outbox, idempotente Consumer,
   Retries und Dead-Letter-Handling implementieren.
+- Kafka als mitgelieferten Distributionspfad für versionierte Domain-Events,
+  minimierte Security-Audits und strukturierte Betriebslogs betreiben;
+  gemeinsames Tagging, getrennte Topics und at-least-once-Deduplizierung
+  verbindlich testen.
 - Globalen Suchindex auf Basis berechtigungsgeprüfter Objektprojektionen liefern.
 - Valkey-Adapter für `CachePort`, `SessionPort`, `RealtimePort` und `QueuePort`
   ergänzen; degradiertes Verhalten und Wiederanlaufverhalten testen.
@@ -200,6 +205,15 @@ offen. Änderungen vorbehalten.
 **Abnahme:** Ein Fachmodul kann ein Objekt, eine Relation und ein versioniertes
 Ereignis veröffentlichen. Nach Neustart oder Valkey-Ausfall bleiben Fachdaten und
 Audit vollständig, Consumer können Ereignisse ohne doppelte Wirkung nachholen.
+
+**Umsetzungsstand 2026-07-22:** Transactional Outbox, partitionierte Worker-
+Leases, Consumer-Receipts, Retry und Dead Letter sind implementiert. Das
+Single-Host- und native Entwicklungsprofil bringt einen persistenten Kafka-
+KRaft-Knoten mit. Domain-Events werden mit versioniertem Envelope und
+konservativem Tagging publiziert; Security-Audits besitzen eine atomare,
+minimierte Export-Queue und Betriebslogs einen nicht blockierenden, geschwärzten
+Kafka-Pfad. Mehrhost-Cluster, Schema-Registry, SIEM-Verbraucher und
+betriebliche Lag-Alerts bleiben weitere Betriebsreife; Änderungen vorbehalten.
 
 ## Phase 3 – Arbeit koordinieren
 
@@ -218,6 +232,25 @@ bestimmte Fachanwendung zu erzwingen.
 - Formulare, Kommentare und Akten als Capabilities auf Core-Diensten aufbauen.
 - Workspace mit globaler Suche, Inbox, Aufgaben, Benachrichtigungen und
   Ressourcenverweisen liefern.
+
+**Dokument-/Storage-Fundament 2026-07-22:** Core Documents und Core Storage sind
+als getrennte logische Dienste im modularen Monolithen festgelegt. Der erste
+inaktive Fundamentschnitt ist implementiert: veröffentlichte unveränderliche
+Versionen, tenantgebundene versiegelte Blobs mit fail-closed `unknown`- und
+`missing`-Zuständen, opake Locations, Klassifikationshistorie,
+Ressourcen-/Permission-Registrierungen und `FORCE RLS`. Die fachliche
+Auditbasis trennt inzwischen `initiated_by` und `executed_by`, bindet die
+tenantgebundene Ressource und prüft den Policy-/Processing-Snapshot
+serverseitig. Noch kein Dokument-Application-Service erzeugt diese Einträge;
+er muss erfolgreiche Mutation, Audit und Outbox später atomar verbinden. Ein
+öffentlicher Bytepfad wird erst mit diesem Producer, Einmaltickets,
+Quarantäneprüfung, S3-Adapter und koordiniertem
+PostgreSQL-/Object-Store-Restore freigegeben.
+Die Work-UI folgt demselben Vertrag schrittweise mit Dokumentliste,
+Detail-/Versionsansicht, Klassifikation und anschließend sicheren
+Upload-/Downloadzuständen; sie erhält keinen direkten Storage-Zugriff.
+Collaboration und Sync folgen danach als Arbeitskopien auf diesem Vertrag;
+Änderungen vorbehalten.
 
 **Abnahme:** Ein generischer Vorgang kann Dokumente enthalten, Beziehungen zu
 anderen Objekten haben, einen Workflow starten, Aufgaben erzeugen, eine
@@ -285,13 +318,17 @@ Betrieb erweitern.
 - Optional erst danach: Fleet und Marketplace.
 - Das HA-/Mehrinstanz-Betriebsprofil als eigenen Abnahmeschnitt liefern:
   stabile Realm-/Instanzkennungen, replizierte PostgreSQL-Wahrheit,
-  QDevice-artigen Identity Witness, exklusive Lease, monotone
-  Autoritätsgeneration, Fencing sowie auditierte manuelle und automatische
-  Promotion.
+  QDevice-artigen Platform Witness mit `identity-control`, exklusive Lease,
+  monotone Autoritätsgeneration, Fencing sowie auditierte manuelle und
+  automatische Promotion.
 - Netztrennung, Witness-Ausfall, Replikationsverzug, Schlüsselrotation,
   Rückkehr der alten Hauptinstanz und Wiederherstellung in automatisierten
   Failover-Drills prüfen. Ohne Witness bleibt der Zwei-Instanz-Failover manuell
   und fail-closed.
+- Die native TLS-/mTLS-Basis aus
+  [`ADR-023`](adr/ADR-023-native-server-tls-und-transportidentitaet.md) um eine
+  versionierte Instanz-/Realm-Zuordnung, Zertifikatsausstellung, Sperrung und
+  Rotationstests für den echten Control-Plane-Transport ergänzen.
 
 **Abnahme:** Mehrere Fachmodule verwenden nachweisbar denselben Core, Updates
 sind wiederholbar und rücksicherbar, und die produktive Instanz erfüllt die

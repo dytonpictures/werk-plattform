@@ -31,6 +31,7 @@ type OrganizationalUnitView struct {
 type Overview struct {
 	Tenant             TenantView              `json:"tenant"`
 	OrganizationalUnit *OrganizationalUnitView `json:"organizational_unit,omitempty"`
+	OrganizationalPath []OrganizationalUnitView `json:"organizational_path"`
 	MembershipType     string                  `json:"membership_type,omitempty"`
 	Permission         string                  `json:"permission"`
 }
@@ -46,7 +47,10 @@ func (service *Service) Overview(ctx context.Context, actor identity.Authenticat
 	if err := identity.AuthorizeAccessPlane(actor, identity.AccessPlaneWork); err != nil || actor.TenantID == nil {
 		return Overview{}, identity.ErrAccessDenied
 	}
-	view := Overview{Permission: "core.workspace.access"}
+	view := Overview{
+		OrganizationalPath: make([]OrganizationalUnitView, 0),
+		Permission:         "core.workspace.access",
+	}
 	err := service.database.WithinTenantRead(ctx, *actor.TenantID, func(ctx context.Context, tx database.TenantTx) error {
 		var unitID, unitName, unitType, membershipType *string
 		err := tx.QueryRow(ctx, `
@@ -82,6 +86,35 @@ func (service *Service) Overview(ctx context.Context, actor identity.Authenticat
 		}
 		if unitID != nil && unitName != nil && unitType != nil {
 			view.OrganizationalUnit = &OrganizationalUnitView{ID: *unitID, Name: *unitName, UnitType: *unitType}
+			rows, err := tx.Query(ctx, `
+				WITH RECURSIVE lineage AS (
+				  SELECT unit.id, unit.parent_id, unit.name, unit.unit_type, 0 AS depth
+				  FROM werk_core.organizational_units AS unit
+				  WHERE unit.tenant_id=$1::uuid AND unit.id=$2::uuid AND unit.status='active'
+				  UNION ALL
+				  SELECT parent.id, parent.parent_id, parent.name, parent.unit_type, child.depth + 1
+				  FROM werk_core.organizational_units AS parent
+				  JOIN lineage AS child ON child.parent_id=parent.id
+				  WHERE parent.tenant_id=$1::uuid AND parent.status='active'
+				)
+				SELECT id::text, name, unit_type
+				FROM lineage
+				ORDER BY depth DESC
+			`, actor.TenantID.String(), *unitID)
+			if err != nil {
+				return err
+			}
+			defer rows.Close()
+			for rows.Next() {
+				var item OrganizationalUnitView
+				if err := rows.Scan(&item.ID, &item.Name, &item.UnitType); err != nil {
+					return err
+				}
+				view.OrganizationalPath = append(view.OrganizationalPath, item)
+			}
+			if err := rows.Err(); err != nil {
+				return err
+			}
 		}
 		if membershipType != nil {
 			view.MembershipType = *membershipType

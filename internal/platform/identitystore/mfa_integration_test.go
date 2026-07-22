@@ -152,4 +152,18 @@ func assertAuthenticationAuditEvents(t *testing.T, ctx context.Context, correlat
 			t.Errorf("missing security audit event %q; counts = %#v", eventType, counts)
 		}
 	}
+	var auditCount int
+	var queuedCount int
+	if err := connection.QueryRow(ctx, `
+		SELECT count(*), count(queue.audit_event_id)
+		FROM werk_core.security_audit_events AS audit
+		LEFT JOIN werk_core.security_audit_export_queue AS queue
+		  ON queue.audit_event_id = audit.id
+		WHERE audit.correlation_id = $1::uuid
+	`, correlationID).Scan(&auditCount, &queuedCount); err != nil {
+		t.Fatal(err)
+	}
+	if auditCount == 0 || queuedCount != auditCount {
+		t.Fatalf("audit export queue coverage = %d/%d", queuedCount, auditCount)
+	}
 }

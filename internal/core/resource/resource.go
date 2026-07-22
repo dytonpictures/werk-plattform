@@ -49,6 +49,9 @@ const (
 	KindWorkRole             Kind = "core.authorization.work-role"
 	KindSecurityLog          Kind = "core.audit.security-log"
 	KindWorkspace            Kind = "core.workspace.workspace"
+	KindDocumentCollection   Kind = "core.documents.collection"
+	KindDocument             Kind = "core.documents.document"
+	KindDocumentVersion      Kind = "core.documents.document-version"
 )
 
 const RootID = "root"

@@ -2,6 +2,7 @@ package outbox
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -22,6 +23,7 @@ var ErrNoEventAvailable = errors.New("no outbox event available")
 const (
 	defaultLeaseDuration = 2 * time.Minute
 	maximumErrorLength   = 2000
+	AllEventTypes        = "*"
 )
 
 type Consumer interface {
@@ -41,7 +43,7 @@ func (registry *Registry) Register(consumer Consumer) error {
 	if consumer == nil || !events.ValidConsumerKey(consumer.Key()) {
 		return events.ErrInvalidConsumer
 	}
-	if !events.ValidEventType(consumer.EventType()) {
+	if consumer.EventType() != AllEventTypes && !events.ValidEventType(consumer.EventType()) {
 		return events.ErrInvalidConsumer
 	}
 	registry.mu.Lock()
@@ -58,7 +60,8 @@ func (registry *Registry) Register(consumer Consumer) error {
 func (registry *Registry) Consumers(eventType string) []Consumer {
 	registry.mu.RLock()
 	defer registry.mu.RUnlock()
-	return append([]Consumer(nil), registry.consumers[eventType]...)
+	consumers := append([]Consumer(nil), registry.consumers[eventType]...)
+	return append(consumers, registry.consumers[AllEventTypes]...)
 }
 
 // Enqueue writes the immutable fact into the caller's existing transaction.
@@ -71,17 +74,21 @@ func Enqueue(ctx context.Context, transaction database.TenantTx, event events.Ev
 	if event.CausationID != nil {
 		causation = uuidString(*event.CausationID)
 	}
-	_, err := transaction.Exec(ctx, `
+	tags, err := json.Marshal(events.NormalizeTags(event.Tags))
+	if err != nil {
+		return events.ErrInvalidEvent
+	}
+	_, err = transaction.Exec(ctx, `
 		INSERT INTO werk_core.outbox_events (
 			id, tenant_id, event_type, producer, subject_kind, subject_id,
-			partition_key, occurred_at, correlation_id, causation_id, payload
+			partition_key, occurred_at, correlation_id, causation_id, tags, payload
 		) VALUES (
 			$1::uuid, $2::uuid, $3, $4, $5, $6::uuid,
-			$7, $8, $9::uuid, $10::uuid, $11::jsonb
+			$7, $8, $9::uuid, $10::uuid, $11::jsonb, $12::jsonb
 		)
 	`, uuidString(event.ID), event.TenantID.String(), event.Type, event.Producer,
 		event.SubjectKind, uuidString(event.SubjectID), event.PartitionKey,
-		event.OccurredAt, uuidString(event.CorrelationID), causation, string(event.Payload))
+		event.OccurredAt, uuidString(event.CorrelationID), causation, string(tags), string(event.Payload))
 	return err
 }
 
@@ -103,6 +110,7 @@ func (store *Store) Claim(ctx context.Context, workerID string) (events.Event, i
 	}
 	var event events.Event
 	var payload string
+	var tags string
 	var causation pgtype.UUID
 	var attempts int
 	var maxAttempts int
@@ -134,12 +142,12 @@ func (store *Store) Claim(ctx context.Context, workerID string) (events.Event, i
 			RETURNING event.id, event.tenant_id, event.event_type, event.producer,
 				event.subject_kind, event.subject_id, event.partition_key,
 				event.occurred_at, event.correlation_id, event.causation_id,
-				event.payload::text, event.attempts, event.max_attempts
+				event.tags::text, event.payload::text, event.attempts, event.max_attempts
 		`, store.now(), workerID, store.now().Add(defaultLeaseDuration)).Scan(
 			&event.ID, &event.TenantID, &event.Type, &event.Producer,
 			&event.SubjectKind, &event.SubjectID, &event.PartitionKey,
 			&event.OccurredAt, &event.CorrelationID, &causation,
-			&payload, &attempts, &maxAttempts,
+			&tags, &payload, &attempts, &maxAttempts,
 		)
 	})
 	if err != nil {
@@ -151,6 +159,9 @@ func (store *Store) Claim(ctx context.Context, workerID string) (events.Event, i
 	if causation.Valid {
 		value := causation.Bytes
 		event.CausationID = &value
+	}
+	if err := json.Unmarshal([]byte(tags), &event.Tags); err != nil || events.ValidateTags(event.Tags) != nil {
+		return events.Event{}, 0, 0, events.ErrInvalidEvent
 	}
 	event.Payload = []byte(payload)
 	return event, attempts, maxAttempts, nil
@@ -206,9 +217,9 @@ func (store *Store) transition(ctx context.Context, eventID [16]byte, workerID, 
 	return store.database.WithinGlobalWrite(ctx, func(ctx context.Context, tx database.TenantTx) error {
 		command, err := tx.Exec(ctx, `
 			UPDATE werk_core.outbox_events
-			SET status = $3, available_at = $4, lease_owner = NULL,
-				lease_expires_at = NULL, last_error = NULLIF($5, ''),
-				completed_at = CASE WHEN $3 = 'completed' THEN $4 ELSE NULL END
+			SET status = $3::text, available_at = $4::timestamptz, lease_owner = NULL,
+				lease_expires_at = NULL, last_error = NULLIF($5::text, ''),
+				completed_at = CASE WHEN $3::text = 'completed' THEN $4::timestamptz ELSE NULL END
 			WHERE id = $1::uuid AND status = 'processing' AND lease_owner = $2
 		`, uuidString(eventID), workerID, status, availableAt, message)
 		if err != nil {

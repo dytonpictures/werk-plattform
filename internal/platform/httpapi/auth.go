@@ -275,7 +275,7 @@ func setSessionCookie(writer http.ResponseWriter, request *http.Request, value s
 }
 
 func setPrivateCookie(writer http.ResponseWriter, request *http.Request, name, value string, maxAge int) {
-	secure := request.TLS != nil || request.Header.Get("X-Forwarded-Proto") == "https"
+	secure := requestUsesSecureTransport(request)
 	http.SetCookie(writer, &http.Cookie{
 		Name: name, Value: value, Path: "/", MaxAge: maxAge,
 		HttpOnly: true, Secure: secure, SameSite: http.SameSiteStrictMode,
@@ -283,7 +283,7 @@ func setPrivateCookie(writer http.ResponseWriter, request *http.Request, name, v
 }
 
 func setCSRFCookie(writer http.ResponseWriter, request *http.Request, value string, maxAge int) {
-	secure := request.TLS != nil || request.Header.Get("X-Forwarded-Proto") == "https"
+	secure := requestUsesSecureTransport(request)
 	http.SetCookie(writer, &http.Cookie{
 		Name: "werk_csrf", Value: value, Path: "/", MaxAge: maxAge,
 		HttpOnly: false, Secure: secure, SameSite: http.SameSiteStrictMode,

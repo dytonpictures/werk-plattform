@@ -123,7 +123,7 @@ flowchart TB
     Agents["Endpoint Agents"]
     Edge["Edge- und Session-Grenze<br/>Caddy · TLS · Reverse Proxy · sichere Sessions"]
     IAM["Identity und Autorisierung<br/>OIDC · SAML · LDAP · MFA · RBAC · Scopes"]
-    Witness["Identity Witness – optional<br/>Lease · Generation · Fencing"]
+    Witness["Platform Witness – optional<br/>Domains · Lease · Generation · Fencing"]
     Frontend["Web-Frontend<br/>Next.js · React · TypeScript"]
     Backend["Backend<br/>Go · chi · sqlc/pgx · OpenAPI"]
     Jobs["Events und Jobs<br/>Outbox · Worker-Queues · Scheduler"]
@@ -214,11 +214,14 @@ Ohne aktiviertes Fleet-Modul ist WERK vollständig ohne Endpoint Agents nutzbar.
 
 ## 7. Edge- und Session-Grenze
 
-Der öffentliche Einstiegspunkt wird durch eine klar definierte Edge-Schicht geschützt.
+Der öffentliche Einstiegspunkt wird durch eine klar definierte Edge-Schicht
+geschützt. Die Serversoftware besitzt unabhängig davon eine native TLS- und
+mTLS-Fähigkeit; ein Reverse Proxy ist eine Betriebsoption und keine
+Sicherheitsvoraussetzung des Softwarevertrags.
 
 Vorgesehene Bestandteile:
 
-- Caddy als TLS-Terminierung und Reverse Proxy,
+- native TLS-Terminierung oder ein ausdrücklich vertrauenswürdiger Reverse Proxy,
 - Same-Origin-Betrieb für Weboberfläche und API,
 - Pfade wie `/`, `/api/v1` und `/events`,
 - OIDC-basierte Sessions,
@@ -228,7 +231,12 @@ Vorgesehene Bestandteile:
 - Security Header,
 - SSE oder WebSocket für Live-Status.
 
-Die Edge-Schicht ist keine fachliche Autorisierungsschicht. Sie ergänzt die Sicherheitsmechanismen des Backends.
+Die Edge-Schicht ist keine fachliche Autorisierungsschicht. Sie ergänzt die
+Sicherheitsmechanismen des Backends. Transportidentität, Policy und
+Authority-Lease bleiben getrennte Prüfungen. Der verbindliche native
+Transportvertrag steht in
+[`ADR-023`](adr/ADR-023-native-server-tls-und-transportidentitaet.md);
+Änderungen vorbehalten.
 
 ---
 
@@ -263,12 +271,14 @@ Mehrere Core- oder Identity-Prozesse an derselben autoritativen
 PostgreSQL-Datenbank bilden noch keine zweite Identity-Autorität. Eine spätere
 zweite Instanz mit eigener Datenbankkopie arbeitet Active/Passive als Replik
 desselben Identity-Realms. Automatischer Failover benötigt einen unabhängigen,
-QDevice-artigen Identity Witness, eine zeitlich begrenzte exklusive Lease, eine
+QDevice-artigen Platform Witness mit `identity-control`, eine zeitlich begrenzte
+exklusive Lease, eine
 monoton steigende Autoritätsgeneration und technisches Fencing der bisherigen
 Hauptinstanz. Ein Healthcheck liefert lediglich ein Ausfallsignal und darf
 niemals allein Schreibhoheit vergeben. Der Witness hält keine Konten,
 Credentials, Schlüssel oder Fachdaten. Die verbindlichen Grenzen beschreibt
-[`ADR-015`](adr/ADR-015-identity-authority-witness-und-failover.md).
+[`ADR-015`](adr/ADR-015-identity-authority-witness-und-failover.md) zusammen mit
+[`ADR-022`](adr/ADR-022-deploymentprofile-und-platform-witness.md).
 
 Fachliche Freigaben gehören ausschließlich in die `work`-Zugriffsebene. Auch
 ein Plattformadministrator darf keine Unternehmens- oder Kundenentscheidung
@@ -364,7 +374,7 @@ Administrationsbereich aufzuheben.
 
 ### Zielstack
 
-- Go 1.26.x
+- Go 1.26.5 oder neuer innerhalb der unterstützten Go-Kompatibilitätslinie
 - chi
 - sqlc / pgx
 - OpenAPI 3.1 beziehungsweise 3.2
@@ -415,6 +425,8 @@ Asynchrone Verarbeitung muss verlässlich, wiederholbar und nachvollziehbar sein
 Vorgesehene Mechanismen:
 
 - PostgreSQL Transactional Outbox,
+- Apache Kafka als mitgelieferter, persistenter Distributionspfad für
+  Domain-Events, minimierte Security-Audits und strukturierte Betriebslogs,
 - Valkey Streams oder dedizierte Worker-Queues,
 - Retries,
 - Dead Letter Queues,
@@ -423,6 +435,15 @@ Vorgesehene Mechanismen:
 - Backpressure.
 
 Redis- beziehungsweise Valkey-Pub/Sub wird nur für **flüchtige Live-Events** verwendet und nicht als Grundlage für verbindliche Jobs.
+
+PostgreSQL bleibt über die Systemgrenze hinweg die fachliche und auditierbare
+Wahrheit. Kafka-Zustellung erfolgt aus atomaren Outbox-/Audit-Queues mindestens
+einmal; stabile Event-IDs ermöglichen Deduplizierung. Domain-Events, Audits und
+Logs verwenden getrennte Topics, ACLs und Retention. Ihr gemeinsames,
+versioniertes Envelope enthält begrenzte Klassifikations-, Zweck- und
+Aufbewahrungstags. Der aktuelle Vertrag steht in
+[`ADR-020`](adr/ADR-020-kafka-event-audit-und-log-streaming.md); Änderungen
+vorbehalten.
 
 ---
 
@@ -442,9 +463,24 @@ Vorgesehene Sicherheits- und Mandantenmechanismen:
 
 ### Object Storage
 
-Dokumente, Anhänge und Artefakte werden in einem S3-kompatiblen Object Store gespeichert.
+Dokumente, Anhänge und Artefakte werden über einen eigenen internen Dokument-
+und Storage-Dienst in einem S3-kompatiblen Object Store gespeichert. „Dienst“
+bezeichnet zunächst getrennte Core-Domänen im modularen Monolithen und noch
+keine vorzeitige Microservice- oder Datenbankaufteilung.
 
-Metadaten, Berechtigungen und fachliche Zuordnungen verbleiben im Backend und in PostgreSQL.
+Core Documents besitzt Dokumente, unveränderliche veröffentlichte Versionen,
+Klassifikation, Aufbewahrungszuordnung und fachliche Sichtbarkeit. Core Storage
+besitzt Blobs, opake Locations, Quarantäne, Transferzustand und Provideradapter.
+Metadaten, Tenant-Bindungen, Hashes und Berechtigungsbezüge verbleiben in
+PostgreSQL; der Provider besitzt ausschließlich die Bytes.
+
+Clients erhalten keine dauerhaften Storage-Credentials und keine frei
+wählbaren Objektpfade. Der erste Transfervertrag verwendet kurzlebige,
+ressourcengebundene Einmaltickets an einem Backend-Endpunkt. Ein späterer
+Collaboration-/Sync-Dienst besitzt nur veränderliche Arbeitskopien und
+veröffentlicht akzeptierte Änderungen als neue Dokumentversion. Die verbindliche
+Trennung steht in [`ADR-021`](adr/ADR-021-interner-dokument-blob-und-transfervertrag.md);
+Änderungen vorbehalten.
 
 ### Valkey
 
@@ -626,7 +662,7 @@ Vorgesehene Betriebsprofile:
 - mehrere Prozesse an einer gemeinsamen PostgreSQL-Wahrheit als erste
   horizontale Betriebsstufe,
 - separate Active/Passive-HA-Variante mit replizierter Datenhaltung und
-  unabhängigem Identity Witness, beispielsweise auf Basis von k3s.
+  unabhängigem Platform Witness, ohne einen bestimmten Orchestrator vorzugeben.
 
 Container und Dienste sollen möglichst:
 
@@ -643,7 +679,8 @@ teilt Widerrufe, Sessions und Sicherheitszähler über dieselbe Datenbank.
 
 Eine spätere zweite Instanz ist keine unabhängige Identity-Quelle. Sie übernimmt
 erst nach bestätigter Replikationsschranke und exklusiver Entscheidung des
-Identity Witness. Ohne erreichbaren Witness gibt es zwischen zwei Instanzen
+Platform Witness in der Domain `identity-control`. Ohne erreichbaren Witness
+gibt es zwischen zwei Instanzen
 keinen automatischen Failover; ein manueller Wechsel muss die alte
 Hauptinstanz nachweislich ausgrenzen und vollständig auditiert werden.
 

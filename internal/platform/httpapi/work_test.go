@@ -55,10 +55,16 @@ func TestWorkspaceRequiresWorkPlaneAndTenantPermission(t *testing.T) {
 		Audience: identity.AudienceWork, Kind: identity.AuthenticationInteractive,
 		Assurance: identity.AssuranceSingleFactor, TenantID: &tenantID,
 	}
-	view := workspacestore.Overview{Tenant: workspacestore.TenantView{ID: tenantID.String(), Name: "Tenant A", Status: "active"}, Permission: "core.workspace.access"}
+	view := workspacestore.Overview{
+		Tenant: workspacestore.TenantView{ID: tenantID.String(), Name: "Tenant A", Status: "active"},
+		OrganizationalPath: []workspacestore.OrganizationalUnitView{
+			{ID: "0196f000-0000-7000-8000-000000000702", Name: "Vertrieb", UnitType: "division"},
+		},
+		Permission: "core.workspace.access",
+	}
 
 	allowed := request(t, NewRouterWithServices(config.Config{}, readinessStub{}, testLogger(), workAuthStub{actor: workActor}, workspaceServiceStub{view: view}, nil), http.MethodGet, "/api/v1/workspace", "")
-	if allowed.Code != http.StatusOK || !containsAll(allowed.Body.String(), `"name":"Tenant A"`, `"permission":"core.workspace.access"`) {
+	if allowed.Code != http.StatusOK || !containsAll(allowed.Body.String(), `"name":"Tenant A"`, `"organizational_path":[`, `"name":"Vertrieb"`, `"permission":"core.workspace.access"`) {
 		t.Fatalf("allowed workspace response = %d %s", allowed.Code, allowed.Body.String())
 	}
 

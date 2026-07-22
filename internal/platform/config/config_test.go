@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestLoadUsesDevelopmentDefaults(t *testing.T) {
 	cfg, err := load(environment(map[string]string{}))
@@ -25,11 +28,51 @@ func TestLoadUsesDevelopmentDefaults(t *testing.T) {
 	if len(cfg.AllowedOrigins) != 2 {
 		t.Fatalf("allowed origins = %v", cfg.AllowedOrigins)
 	}
+	if cfg.Kafka.Enabled || len(cfg.Kafka.Brokers) != 1 || cfg.Kafka.PublishTimeout != 10*time.Second {
+		t.Fatalf("unexpected Kafka development defaults: %#v", cfg.Kafka)
+	}
 }
 
 func TestLoadRejectsInvalidWorkerConcurrency(t *testing.T) {
 	if _, err := load(environment(map[string]string{"WERK_WORKER_CONCURRENCY": "0"})); err == nil {
 		t.Fatal("invalid worker concurrency was accepted")
+	}
+}
+
+func TestLoadAcceptsKafkaDevelopmentConfiguration(t *testing.T) {
+	cfg, err := load(environment(map[string]string{
+		"WERK_KAFKA_ENABLED":           "true",
+		"WERK_KAFKA_BROKERS":           "kafka-a:9092,kafka-b:9092",
+		"WERK_KAFKA_CLIENT_ID":         "platform-worker",
+		"WERK_KAFKA_AUDIT_CONCURRENCY": "2",
+	}))
+	if err != nil {
+		t.Fatalf("valid Kafka configuration rejected: %v", err)
+	}
+	if !cfg.Kafka.Enabled || len(cfg.Kafka.Brokers) != 2 || cfg.Kafka.AuditConcurrency != 2 {
+		t.Fatalf("unexpected Kafka config: %#v", cfg.Kafka)
+	}
+}
+
+func TestLoadRejectsInsecureKafkaInProduction(t *testing.T) {
+	configuration := productionEnvironment()
+	configuration["WERK_KAFKA_ENABLED"] = "true"
+	configuration["WERK_KAFKA_BROKERS"] = "kafka.internal:9092"
+	if _, err := load(environment(configuration)); err == nil {
+		t.Fatal("production Kafka without TLS was accepted")
+	}
+}
+
+func TestLoadAcceptsAuthenticatedKafkaInProduction(t *testing.T) {
+	configuration := productionEnvironment()
+	configuration["WERK_KAFKA_ENABLED"] = "true"
+	configuration["WERK_KAFKA_BROKERS"] = "kafka.internal:9093"
+	configuration["WERK_KAFKA_TLS"] = "true"
+	configuration["WERK_KAFKA_SASL_MECHANISM"] = "scram-sha-512"
+	configuration["WERK_KAFKA_SASL_USERNAME"] = "platform-worker"
+	configuration["WERK_KAFKA_SASL_PASSWORD"] = "not-a-development-secret"
+	if _, err := load(environment(configuration)); err != nil {
+		t.Fatalf("authenticated production Kafka rejected: %v", err)
 	}
 }
 
@@ -107,13 +150,72 @@ func TestLoadRejectsInvalidHTTPAddress(t *testing.T) {
 	}
 }
 
+func TestLoadAPIRequiresNativeTLSInProduction(t *testing.T) {
+	configuration := productionEnvironment()
+	if _, err := loadAPI(environment(configuration)); err == nil {
+		t.Fatal("production API server without native TLS was accepted")
+	}
+	configuration["WERK_HTTP_TLS_MODE"] = "tls"
+	configuration["WERK_HTTP_TLS_CERT_FILE"] = "/run/secrets/server.pem"
+	configuration["WERK_HTTP_TLS_KEY_FILE"] = "/run/secrets/server-key.pem"
+	loaded, err := loadAPI(environment(configuration))
+	if err != nil {
+		t.Fatalf("production API TLS configuration rejected: %v", err)
+	}
+	if !loaded.HTTPServerTLS.Enabled() {
+		t.Fatal("production API TLS configuration was not enabled")
+	}
+}
+
+func TestLoadAPIAcceptsMutualTLSAndRequiresClientCA(t *testing.T) {
+	configuration := productionEnvironment()
+	configuration["WERK_HTTP_TLS_MODE"] = "mtls"
+	configuration["WERK_HTTP_TLS_CERT_FILE"] = "/run/secrets/server.pem"
+	configuration["WERK_HTTP_TLS_KEY_FILE"] = "/run/secrets/server-key.pem"
+	if _, err := loadAPI(environment(configuration)); err == nil {
+		t.Fatal("mutual API TLS without a client CA was accepted")
+	}
+	configuration["WERK_HTTP_TLS_CLIENT_CA_FILE"] = "/run/secrets/client-ca.pem"
+	if _, err := loadAPI(environment(configuration)); err != nil {
+		t.Fatalf("valid mutual API TLS configuration rejected: %v", err)
+	}
+}
+
+func TestLoadRejectsAmbiguousHTTPServerTLSMaterial(t *testing.T) {
+	_, err := load(environment(map[string]string{
+		"WERK_HTTP_TLS_MODE":      "disabled",
+		"WERK_HTTP_TLS_CERT_FILE": "server.pem",
+	}))
+	if err == nil {
+		t.Fatal("certificate material with disabled server TLS was accepted")
+	}
+}
+
+func TestLoadParsesOnlyValidTrustedProxyNetworks(t *testing.T) {
+	configuration, err := load(environment(map[string]string{
+		"WERK_HTTP_TRUSTED_PROXY_CIDRS": "127.0.0.0/8,10.20.0.0/16",
+	}))
+	if err != nil {
+		t.Fatalf("valid trusted proxy networks rejected: %v", err)
+	}
+	if len(configuration.HTTPTrustedProxyCIDRs) != 2 {
+		t.Fatalf("trusted proxy networks = %v", configuration.HTTPTrustedProxyCIDRs)
+	}
+	if _, err := load(environment(map[string]string{"WERK_HTTP_TRUSTED_PROXY_CIDRS": "127.0.0.1"})); err == nil {
+		t.Fatal("proxy address without an explicit network was accepted")
+	}
+	if _, err := load(environment(map[string]string{"WERK_HTTP_TRUSTED_PROXY_CIDRS": "0.0.0.0/0"})); err == nil {
+		t.Fatal("unrestricted trusted proxy network was accepted")
+	}
+}
+
 func TestLoadAcceptsProductionConfiguration(t *testing.T) {
 	cfg, err := load(environment(map[string]string{
 		"WERK_ENV":                  "production",
 		"WERK_HTTP_ADDRESS":         "127.0.0.1:8081",
-		"DATABASE_URL":              "postgresql://runtime:secret@database:5432/werk?sslmode=require",
-		"IDENTITY_DATABASE_URL":     "postgresql://identity:other-secret@database:5432/werk?sslmode=require",
-		"ADMIN_DATABASE_URL":        "postgresql://admin:admin-secret@database:5432/werk?sslmode=require",
+		"DATABASE_URL":              "postgresql://runtime:secret@database:5432/werk?sslmode=verify-full",
+		"IDENTITY_DATABASE_URL":     "postgresql://identity:other-secret@database:5432/werk?sslmode=verify-full",
+		"ADMIN_DATABASE_URL":        "postgresql://admin:admin-secret@database:5432/werk?sslmode=verify-full",
 		"WERK_IDENTITY_MFA_ENABLED": "true",
 		"WERK_IDENTITY_MFA_KEY":     "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY",
 		"WERK_ALLOWED_ORIGINS":      "https://werk.example",
@@ -129,9 +231,9 @@ func TestLoadAcceptsProductionConfiguration(t *testing.T) {
 func TestLoadRejectsInsecureProductionIdentityTransport(t *testing.T) {
 	base := map[string]string{
 		"WERK_ENV":                  "production",
-		"DATABASE_URL":              "postgresql://runtime:secret@database:5432/werk?sslmode=require",
-		"IDENTITY_DATABASE_URL":     "postgresql://identity:other-secret@database:5432/werk?sslmode=require",
-		"ADMIN_DATABASE_URL":        "postgresql://admin:admin-secret@database:5432/werk?sslmode=require",
+		"DATABASE_URL":              "postgresql://runtime:secret@database:5432/werk?sslmode=verify-full",
+		"IDENTITY_DATABASE_URL":     "postgresql://identity:other-secret@database:5432/werk?sslmode=verify-full",
+		"ADMIN_DATABASE_URL":        "postgresql://admin:admin-secret@database:5432/werk?sslmode=verify-full",
 		"WERK_IDENTITY_MFA_ENABLED": "true",
 		"WERK_IDENTITY_MFA_KEY":     "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY",
 		"WERK_ALLOWED_ORIGINS":      "http://example.test",
@@ -143,6 +245,16 @@ func TestLoadRejectsInsecureProductionIdentityTransport(t *testing.T) {
 	base["IDENTITY_DATABASE_URL"] = "postgresql://identity:other-secret@database:5432/werk?sslmode=disable"
 	if _, err := load(environment(base)); err == nil {
 		t.Fatal("insecure production identity database URL was accepted")
+	}
+}
+
+func TestLoadRequiresFullDatabaseIdentityVerificationInProduction(t *testing.T) {
+	for _, mode := range []string{"require", "verify-ca"} {
+		configuration := productionEnvironment()
+		configuration["DATABASE_URL"] = "postgresql://runtime:secret@database:5432/werk?sslmode=" + mode
+		if _, err := load(environment(configuration)); err == nil {
+			t.Fatalf("production database sslmode=%s was accepted", mode)
+		}
 	}
 }
 
@@ -180,5 +292,18 @@ func environment(values map[string]string) lookupEnvironment {
 	return func(key string) (string, bool) {
 		value, ok := values[key]
 		return value, ok
+	}
+}
+
+func productionEnvironment() map[string]string {
+	return map[string]string{
+		"WERK_ENV":                  "production",
+		"WERK_HTTP_ADDRESS":         "127.0.0.1:8081",
+		"DATABASE_URL":              "postgresql://runtime:secret@database:5432/werk?sslmode=verify-full",
+		"IDENTITY_DATABASE_URL":     "postgresql://identity:other-secret@database:5432/werk?sslmode=verify-full",
+		"ADMIN_DATABASE_URL":        "postgresql://admin:admin-secret@database:5432/werk?sslmode=verify-full",
+		"WERK_IDENTITY_MFA_ENABLED": "true",
+		"WERK_IDENTITY_MFA_KEY":     "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY",
+		"WERK_ALLOWED_ORIGINS":      "https://platform.example",
 	}
 }

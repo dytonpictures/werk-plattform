@@ -35,3 +35,15 @@ func TestRegistrationOwnsItsNamespace(t *testing.T) {
 		t.Fatal("foreign resource namespace accepted")
 	}
 }
+
+func TestDocumentResourceKindsAreTenantAddressable(t *testing.T) {
+	tenant, _ := tenancy.NewTenantID()
+	if err := TenantRef(tenant, KindDocumentCollection, RootID).Validate(); err != nil {
+		t.Fatalf("tenant document collection root denied: %v", err)
+	}
+	for _, kind := range []Kind{KindDocument, KindDocumentVersion} {
+		if err := TenantRef(tenant, kind, "019f8514-7086-7752-8ac3-5edecdbc4afd").Validate(); err != nil {
+			t.Errorf("tenant document reference %q denied: %v", kind, err)
+		}
+	}
+}
