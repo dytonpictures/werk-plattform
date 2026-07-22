@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Check formatting
+        run: make fmt-check
+      - name: Vet
+        run: make vet
+      - name: Test with race detector
+        run: go test -race ./...
+      - name: Validate Compose configuration
+        run: make compose-config
+
+  migrations:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Test roles, repeatable migrations and tenant isolation
+        run: make integration-test
+
+  restore:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Test encrypted backup and isolated restore
+        run: make restore-test
+
+  images:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Build WERK images
+        run: docker compose build api worker migrate dashboard
+      - name: Build backup tool image
+        run: docker compose -f compose.yaml -f compose.ops.yaml build backup

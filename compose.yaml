@@ -1,76 +1,199 @@
 name: werk
 
 services:
-  werk-postgres:
-    image: postgres:18.4-alpine
-    environment:
-      POSTGRES_DB: ${POSTGRES_DB:-werk}
-      POSTGRES_USER: ${POSTGRES_USER:-werk}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
-    volumes:
-      - werk-postgres-data:/var/lib/postgresql
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
-      interval: 5s
-      timeout: 3s
-      retries: 20
-    restart: unless-stopped
-    security_opt:
-      - no-new-privileges:true
-
-  werk-api:
-    build:
-      context: ./apps/api
-      args:
-        GO_VERSION: "1.26.1"
-    environment:
-      WERK_ENV: ${WERK_ENV:-development}
-      WERK_VERSION: ${WERK_VERSION:-0.1.0-dev}
-      WERK_HTTP_ADDR: :8080
-      WERK_DATABASE_URL: postgres://${POSTGRES_USER:-werk}:${POSTGRES_PASSWORD}@werk-postgres:5432/${POSTGRES_DB:-werk}?sslmode=disable
+  edge:
+    image: caddy:2-alpine
     ports:
-      - "${WERK_API_PORT:-127.0.0.1:8080}:8080"
+      - "${WERK_PORT:-3000}:80"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
     depends_on:
-      werk-postgres:
+      api:
+        condition: service_healthy
+      dashboard:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "/app/werk-api", "healthcheck"]
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/health/live"]
       interval: 10s
       timeout: 3s
-      retries: 10
-    restart: unless-stopped
+      retries: 6
+    networks:
+      - edge
     read_only: true
     tmpfs:
-      - /tmp
+      - /config
+      - /data
     security_opt:
       - no-new-privileges:true
+    restart: unless-stopped
 
-  werk-web:
+  dashboard:
+    build:
+      context: ./dashboard
+    environment:
+      WERK_DASHBOARD_ADDRESS: 0.0.0.0:3000
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/health/live"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+    networks:
+      - edge
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+  api:
     build:
       context: .
-      dockerfile: apps/web/Dockerfile
       args:
-        NODE_VERSION: "24.18.0"
+        SERVICE: api
     environment:
-      NODE_ENV: production
-      HOSTNAME: 0.0.0.0
-      WERK_INTERNAL_API_URL: ${WERK_INTERNAL_API_URL:-http://werk-api:8080}
-    ports:
-      - "${WERK_WEB_PORT:-3000}:3000"
+      WERK_ENV: ${WERK_ENV:-development}
+      WERK_BUILD_VERSION: ${WERK_BUILD_VERSION:-dev}
+      WERK_BOOTSTRAP_ADMIN_PASSWORD: ${WERK_BOOTSTRAP_ADMIN_PASSWORD:-}
+      WERK_DEV_WORKER_PASSWORD: ${WERK_DEV_WORKER_PASSWORD:-}
+      WERK_IDENTITY_MFA_ENABLED: ${WERK_IDENTITY_MFA_ENABLED:-true}
+      WERK_IDENTITY_MFA_KEY: ${WERK_IDENTITY_MFA_KEY:-MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY}
+      WERK_ALLOWED_ORIGINS: ${WERK_ALLOWED_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
+      DATABASE_URL: postgres://werk_work_runtime:${POSTGRES_WORK_PASSWORD:-werk-work-dev}@postgres:5432/werk?sslmode=disable
+      IDENTITY_DATABASE_URL: postgres://werk_identity_runtime:${POSTGRES_IDENTITY_PASSWORD:-werk-identity-dev}@postgres:5432/werk?sslmode=disable
+      ADMIN_DATABASE_URL: postgres://werk_admin_runtime:${POSTGRES_ADMIN_PASSWORD:-werk-admin-dev}@postgres:5432/werk?sslmode=disable
     depends_on:
-      werk-api:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1:3000/api/health"]
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/health/ready"]
       interval: 10s
       timeout: 3s
-      retries: 10
-    restart: unless-stopped
+      retries: 6
+    networks:
+      - edge
+      - data
     read_only: true
     tmpfs:
       - /tmp
+    cap_drop:
+      - ALL
     security_opt:
       - no-new-privileges:true
+    stop_grace_period: 25s
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      args:
+        SERVICE: worker
+    environment:
+      WERK_ENV: ${WERK_ENV:-development}
+      WERK_BUILD_VERSION: ${WERK_BUILD_VERSION:-dev}
+      WERK_WORKER_CONCURRENCY: ${WERK_WORKER_CONCURRENCY:-4}
+      DATABASE_URL: postgres://werk_worker_runtime:${POSTGRES_WORKER_PASSWORD:-werk-worker-dev}@postgres:5432/werk?sslmode=disable
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    networks:
+      - data
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+  migrate:
+    build:
+      context: .
+      args:
+        SERVICE: migrate
+    environment:
+      WERK_ENV: ${WERK_ENV:-development}
+      DATABASE_URL: postgres://werk_migrator:${POSTGRES_MIGRATOR_PASSWORD:-werk-migrator-dev}@postgres:5432/werk?sslmode=disable
+    depends_on:
+      database-roles:
+        condition: service_completed_successfully
+    networks:
+      - data
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: "no"
+
+  database-roles:
+    image: postgres:18-alpine
+    environment:
+      PGHOST: postgres
+      PGPORT: 5432
+      PGDATABASE: werk
+      PGUSER: werk
+      PGPASSWORD: ${POSTGRES_PASSWORD:-werk}
+      WERK_ENV: ${WERK_ENV:-development}
+      WERK_DB_NAME: werk
+      WERK_MIGRATOR_PASSWORD: ${POSTGRES_MIGRATOR_PASSWORD:-werk-migrator-dev}
+      WERK_WORK_PASSWORD: ${POSTGRES_WORK_PASSWORD:-werk-work-dev}
+      WERK_IDENTITY_PASSWORD: ${POSTGRES_IDENTITY_PASSWORD:-werk-identity-dev}
+      WERK_ADMIN_PASSWORD: ${POSTGRES_ADMIN_PASSWORD:-werk-admin-dev}
+      WERK_SERVICE_PASSWORD: ${POSTGRES_SERVICE_PASSWORD:-werk-service-dev}
+      WERK_WORKER_PASSWORD: ${POSTGRES_WORKER_PASSWORD:-werk-worker-dev}
+      WERK_BACKUP_PASSWORD: ${POSTGRES_BACKUP_PASSWORD:-werk-backup-dev}
+    command: ["sh", "/bootstrap/bootstrap-roles.sh"]
+    volumes:
+      - ./deploy/postgres:/bootstrap:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - data
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: "no"
+
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_DB: werk
+      POSTGRES_USER: werk
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-werk}
+    volumes:
+      - werk-postgres:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U werk -d werk"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - data
+    restart: unless-stopped
+
+  valkey:
+    image: valkey/valkey:8-alpine
+    command: ["valkey-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+    networks:
+      - data
+    restart: unless-stopped
+
+networks:
+  edge:
+  data:
+    internal: true
 
 volumes:
-  werk-postgres-data:
+  werk-postgres:

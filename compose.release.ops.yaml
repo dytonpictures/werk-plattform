@@ -1,0 +1,8 @@
+services:
+  backup:
+    image: ghcr.io/dytonpictures/werk-plattform-backup:${WERK_BUILD_VERSION:?WERK_BUILD_VERSION must be set}
+    pull_policy: always
+
+  restore:
+    image: ghcr.io/dytonpictures/werk-plattform-backup:${WERK_BUILD_VERSION:?WERK_BUILD_VERSION must be set}
+    pull_policy: always

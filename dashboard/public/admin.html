@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="de" data-density="cozy">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>WERK · Administration</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <script src="/session.js" defer></script>
+    <script src="/admin.js" defer></script>
+  </head>
+  <body>
+    <div class="workspace-shell" data-authenticated-page="/admin">
+      <header class="workspace-header">
+        <a class="brand" href="/admin#users"><span class="brand-mark"><span class="brand-mark-dot"></span></span><span class="brand-name">WERK</span><span class="brand-separator"></span><span data-account-class>Administration</span></a>
+        <div class="workspace-actions"><details class="profile-menu"><summary aria-label="Profilmenü öffnen"><span class="profile-menu-avatar" data-profile-initials>W</span><span class="profile-menu-label"><strong data-profile-name>Profil</strong><small data-profile-account-class>Konto</small></span><span class="profile-menu-chevron" aria-hidden="true">⌄</span></summary><div class="profile-menu-popover"><div class="profile-menu-identity"><strong data-profile-name>Profil wird geladen</strong><span data-profile-login>—</span></div><div class="profile-menu-separator"></div><a href="/profile">Mein Profil</a><button data-page-logout type="button">Abmelden</button></div></details></div>
+      </header>
+      <div class="global-layout">
+        <nav class="global-navigation" data-global-navigation aria-label="Globale Navigation"></nav>
+        <main class="workspace-main admin-workspace">
+          <p class="form-notice admin-page-notice" data-page-notice role="status" hidden></p>
+
+          <section data-admin-view="users">
+            <header class="admin-page-header">
+              <div><p class="admin-breadcrumb">Verwaltung / Identität & Zugriff</p><h1>Benutzerkonten</h1><p>Arbeitskonten, Organisationszuordnung und Zugangsstatus zentral verwalten.</p></div>
+              <button class="button button-primary" type="button" data-open-user-dialog><span aria-hidden="true">＋</span> Benutzer anlegen</button>
+            </header>
+            <div class="admin-status-strip" aria-label="Benutzerstatus">
+              <div><span>Konten gesamt</span><strong data-user-total>—</strong></div>
+              <div><span>Aktive Konten</span><strong data-user-active>—</strong></div>
+              <div><span>Ersteinrichtung offen</span><strong data-user-onboarding>—</strong></div>
+              <p data-user-refreshed>Noch nicht aktualisiert</p>
+            </div>
+            <div class="admin-toolbar" role="search">
+              <label class="admin-search"><span class="visually-hidden">Benutzer durchsuchen</span><span class="admin-search-icon" aria-hidden="true"></span><input type="search" data-user-search placeholder="Name, Anmeldename oder Rolle durchsuchen" autocomplete="off" /></label>
+              <label class="form-field admin-filter"><span>Mandant</span><select data-work-tenant-select><option value="">Mandant wählen</option></select></label>
+              <button class="button button-secondary" type="button" data-refresh-users><span class="refresh-icon" aria-hidden="true">↻</span> Aktualisieren</button>
+            </div>
+            <div class="admin-list-header"><p data-user-summary aria-live="polite">Mandant auswählen, um Konten anzuzeigen.</p></div>
+            <div class="admin-table-shell" role="region" aria-label="Benutzerliste" tabindex="0">
+              <table class="admin-table user-table">
+                <thead><tr><th scope="col"><button class="table-sort is-active" type="button" data-user-sort="display_name">Benutzer <span aria-hidden="true">↑</span></button></th><th scope="col"><button class="table-sort" type="button" data-user-sort="organizational_unit_name">Organisation <span aria-hidden="true">↕</span></button></th><th scope="col">Rollen</th><th scope="col"><button class="table-sort" type="button" data-user-sort="status">Status <span aria-hidden="true">↕</span></button></th><th scope="col">Sicherheit</th><th scope="col" class="table-actions">Aktionen</th></tr></thead>
+                <tbody data-user-list></tbody>
+              </table>
+              <div class="admin-empty-state" data-user-empty><strong>Keine Benutzer vorhanden</strong><span>Wählen Sie einen Mandanten oder legen Sie das erste Arbeitskonto an.</span></div>
+              <footer class="admin-table-footer"><span data-user-range>0 Einträge</span><div><span>25 pro Seite</span><button class="icon-button table-page-button" type="button" data-user-previous aria-label="Vorherige Seite">‹</button><button class="icon-button table-page-button" type="button" data-user-next aria-label="Nächste Seite">›</button></div></footer>
+            </div>
+          </section>
+
+          <section data-admin-view="organization" hidden>
+            <header class="admin-page-header">
+              <div><p class="admin-breadcrumb">Verwaltung / Unternehmensstruktur</p><h1>Unternehmensstruktur</h1><p>Mandanten als Sicherheitsgrenze und ihre interne Struktur an einem zentralen Ort verwalten.</p></div>
+            </header>
+            <select data-tenant-select hidden aria-hidden="true"><option value="">Mandant wählen</option></select>
+            <div class="organization-master-detail">
+              <aside class="organization-tenants" aria-label="Mandanten">
+                <header><div><p class="admin-breadcrumb">Übergeordneter Kontext</p><h2>Mandanten</h2></div><button class="icon-button organization-add-button" type="button" data-open-tenant-dialog aria-label="Mandant anlegen" title="Mandant anlegen">＋</button></header>
+                <p class="organization-summary" data-tenant-summary>Mandanten werden geladen.</p>
+                <div class="organization-tenant-list" data-tenant-list></div>
+              </aside>
+              <section class="organization-units">
+                <header class="organization-detail-header">
+                  <div><p class="admin-breadcrumb">Struktur im ausgewählten Mandanten</p><h2 data-selected-tenant-name>Organisationseinheiten</h2><p data-unit-summary>Mandant auswählen, um Einheiten anzuzeigen.</p></div>
+                  <div class="organization-detail-actions"><button class="button button-secondary" type="button" data-open-tenant-edit-dialog disabled>Mandant bearbeiten</button><button class="button button-secondary" type="button" data-open-selected-users>Benutzer anzeigen</button><button class="button button-primary" type="button" data-open-unit-dialog><span aria-hidden="true">＋</span> Einheit anlegen</button></div>
+                </header>
+                <div class="admin-table-shell" role="region" aria-label="Organisationseinheiten" tabindex="0">
+                  <table class="admin-table organization-unit-table"><thead><tr><th scope="col">Organisationseinheit</th><th scope="col">Typ</th><th scope="col">Übergeordnet</th><th scope="col">Status</th><th scope="col">Kennung</th><th scope="col" class="table-actions">Aktionen</th></tr></thead><tbody data-unit-list></tbody></table>
+                  <div class="admin-empty-state" data-unit-empty><strong>Keine Organisationseinheiten vorhanden</strong><span>Legen Sie die erste Einheit für diesen Mandanten an.</span></div>
+                </div>
+              </section>
+            </div>
+          </section>
+
+          <section data-admin-view="roles" hidden>
+            <header class="admin-page-header"><div><p class="admin-breadcrumb">Verwaltung / Identität & Zugriff</p><h1>Rollen & Berechtigungen</h1><p>Technische Zugriffsrollen für Arbeitskonten innerhalb eines Mandanten verwalten.</p></div><button class="button button-primary" type="button" data-open-role-dialog><span aria-hidden="true">＋</span> Rolle anlegen</button></header>
+            <div class="admin-governance-note"><span class="admin-governance-icon" aria-hidden="true">✓</span><div><strong>Klare Zuständigkeitsgrenze</strong><p>Administratoren konfigurieren registrierte Work-Berechtigungen, handeln aber nicht als Benutzer und treffen keine fachlichen Unternehmensentscheidungen. Systemrollen bleiben unveränderlich.</p></div></div>
+            <div class="admin-status-strip" aria-label="Rollenstatus">
+              <div><span>Rollen gesamt</span><strong data-role-total>—</strong></div>
+              <div><span>Systemrollen</span><strong data-role-system>—</strong></div>
+              <div><span>Eigene Rollen</span><strong data-role-custom>—</strong></div>
+              <p data-role-permission-total>Mandant auswählen</p>
+            </div>
+            <div class="admin-toolbar">
+              <label class="form-field admin-filter"><span>Mandant</span><select data-role-tenant-select><option value="">Mandant wählen</option></select></label>
+              <div class="admin-toolbar-context"><strong data-role-tenant-name>Kein Mandant ausgewählt</strong><span>Rollen sind immer an genau diesen Mandanten gebunden.</span></div>
+              <button class="button button-secondary" type="button" data-refresh-roles><span class="refresh-icon" aria-hidden="true">↻</span> Aktualisieren</button>
+            </div>
+            <div class="admin-table-shell" role="region" aria-label="Rollenliste" tabindex="0">
+              <table class="admin-table role-table"><thead><tr><th scope="col">Rolle</th><th scope="col">Typ</th><th scope="col">Berechtigungen</th><th scope="col">Zuweisungen</th><th scope="col">Status</th><th scope="col" class="table-actions">Aktionen</th></tr></thead><tbody data-role-list></tbody></table>
+              <div class="admin-empty-state" data-role-empty><strong>Keine Rollen vorhanden</strong><span>Wählen Sie einen Mandanten oder legen Sie eine eigene Work-Rolle an.</span></div>
+            </div>
+          </section>
+
+          <section data-admin-view="providers" hidden>
+            <header class="admin-page-header"><div><p class="admin-breadcrumb">Verwaltung / Identität & Zugriff</p><h1>Anmeldung & Provider</h1><p>Interne Anmeldung sowie spätere OIDC-, SAML- und LDAP-Adapter verwalten.</p></div></header>
+            <div class="admin-placeholder"><span class="global-navigation-icon" aria-hidden="true">ID</span><h2>Core Identity ist aktiv</h2><p>Externe Provider bleiben optionale Adapter; Kontoart, Tenant, Berechtigungen und Audit verbleiben in WERK.</p></div>
+          </section>
+
+          <section data-admin-view="audit" hidden>
+            <header class="admin-page-header"><div><p class="admin-breadcrumb">Governance / Sicherheit & Audit</p><h1>Audit-Protokoll</h1><p>Identitäts-, Berechtigungs- und Administrationsereignisse installationsweit nachvollziehen.</p></div><button class="button button-secondary" type="button" data-refresh-audit><span class="refresh-icon" aria-hidden="true">↻</span> Aktualisieren</button></header>
+            <div class="admin-governance-note"><span class="admin-governance-icon" aria-hidden="true">✓</span><div><strong>Geschützter Lesezugriff</strong><p>Nur MFA-bestätigte Administrationskonten mit eigener Audit-Berechtigung erhalten Zugriff. Jeder Abruf wird selbst protokolliert; freie interne Detaildaten, Session-Kennungen und Geheimnisse verlassen die API nicht.</p></div></div>
+            <div class="admin-status-strip" aria-label="Auditstatus">
+              <div><span>Angezeigte Ereignisse</span><strong data-audit-total>—</strong></div>
+              <div><span>Abgelehnt</span><strong data-audit-denied>—</strong></div>
+              <div><span>Fehlgeschlagen</span><strong data-audit-failed>—</strong></div>
+              <p data-audit-refreshed>Noch nicht aktualisiert</p>
+            </div>
+            <div class="admin-toolbar" role="search">
+              <label class="form-field admin-filter"><span>Mandant</span><select data-audit-tenant-select><option value="">Alle Mandanten und Installation</option></select></label>
+              <label class="form-field admin-filter"><span>Ergebnis</span><select data-audit-outcome-select><option value="">Alle Ergebnisse</option><option value="succeeded">Erfolgreich</option><option value="denied">Abgelehnt</option><option value="failed">Fehlgeschlagen</option></select></label>
+              <label class="form-field admin-audit-event-filter"><span>Ereignistyp (exakt)</span><input type="search" data-audit-event-type placeholder="z. B. identity.login.succeeded.v1" autocomplete="off" /></label>
+            </div>
+            <div class="admin-list-header"><p data-audit-summary aria-live="polite">Sicherheitsereignisse werden beim Öffnen geladen.</p></div>
+            <div class="admin-table-shell" role="region" aria-label="Audit-Protokoll" tabindex="0">
+              <table class="admin-table audit-table"><thead><tr><th scope="col">Zeitpunkt</th><th scope="col">Ereignis</th><th scope="col">Ergebnis</th><th scope="col">Kontext</th><th scope="col">Akteur</th><th scope="col" class="table-actions">Nachverfolgung</th></tr></thead><tbody data-audit-list></tbody></table>
+              <div class="admin-empty-state" data-audit-empty><strong>Keine passenden Ereignisse</strong><span>Passen Sie die Filter an oder aktualisieren Sie die Ansicht.</span></div>
+              <footer class="admin-table-footer"><span data-audit-range>0 Ereignisse</span><div><button class="button button-compact" type="button" data-load-more-audit>Weitere laden</button></div></footer>
+            </div>
+          </section>
+
+          <section data-admin-view="operations" hidden>
+            <header class="admin-page-header"><div><p class="admin-breadcrumb">System / Plattformbetrieb</p><h1>Plattformbetrieb</h1><p>Zustand der WERK-Installation, technische Abhängigkeiten und Diagnose zentral überwachen.</p></div><button class="button button-secondary" type="button" data-refresh-operations><span class="refresh-icon" aria-hidden="true">↻</span> Status aktualisieren</button></header>
+            <div class="operations-layout">
+              <section class="operations-panel operations-health">
+                <header><div><p class="admin-breadcrumb">Live-Zustand</p><h2>Systemzustand</h2></div><span class="status-badge" data-operations-overall>Wird geprüft</span></header>
+                <div class="operations-status-list">
+                  <div><span class="operations-status-dot" data-live-dot></span><div><strong>API-Prozess</strong><small>Liveness des WERK-API-Dienstes</small></div><span data-live-status>Wird geprüft</span></div>
+                  <div><span class="operations-status-dot" data-ready-dot></span><div><strong>Pflichtabhängigkeiten</strong><small>Readiness einschließlich PostgreSQL</small></div><span data-ready-status>Wird geprüft</span></div>
+                  <div><span class="operations-status-dot is-ready"></span><div><strong>Administrationsoberfläche</strong><small>Dashboard über den Edge-Endpunkt erreichbar</small></div><span>Bereit</span></div>
+                </div>
+                <footer><span data-operations-checked>Noch nicht geprüft</span></footer>
+              </section>
+              <section class="operations-panel">
+                <header><div><p class="admin-breadcrumb">Installation</p><h2>Build-Informationen</h2></div></header>
+                <dl class="operations-metadata"><div><dt>Produkt</dt><dd data-meta-product>—</dd></div><div><dt>Dienst</dt><dd data-meta-service>—</dd></div><div><dt>Version</dt><dd data-meta-version>—</dd></div><div><dt>API-Vertrag</dt><dd data-meta-api>—</dd></div></dl>
+              </section>
+              <section class="operations-panel">
+                <header><div><p class="admin-breadcrumb">Diagnose</p><h2>Protokolle</h2></div><span class="status-badge status-warning">Grundlage vorhanden</span></header>
+                <div class="operations-explanation"><p>API und Worker schreiben strukturierte JSON-Protokolle mit Request- und Korrelationskennungen. Inhalte, Tokens und Querystrings werden nicht protokolliert.</p><div class="operations-next-step"><strong>Zentrale Logsuche noch nicht angebunden</strong><span>Vorgesehen ist ein interner, berechtigungsgeprüfter Adapter auf Loki oder einen vergleichbaren Logspeicher – kein direkter Container- oder Dateizugriff aus dem Browser.</span></div></div>
+              </section>
+              <section class="operations-panel">
+                <header><div><p class="admin-breadcrumb">Hostsystem</p><h2>Maschine & Ressourcen</h2></div><span class="status-badge">Nicht angebunden</span></header>
+                <div class="operations-explanation"><p>CPU, Arbeitsspeicher, Datenträger, Containerzustände und Hosttemperaturen benötigen eine eigene interne Telemetriequelle.</p><div class="operations-next-step"><strong>Sichere Anbindung vorgesehen</strong><span>Hostmetriken werden später über OpenTelemetry, Node Exporter oder einen begrenzten Betriebsadapter gesammelt. Die Weboberfläche erhält keinen Shell- oder Docker-Socket-Zugriff.</span></div></div>
+              </section>
+            </div>
+          </section>
+
+          <dialog class="admin-dialog admin-details-dialog" data-audit-details-dialog aria-labelledby="audit-details-title">
+            <div class="admin-dialog-form">
+              <header class="admin-dialog-header"><div><p class="admin-breadcrumb">Security Audit</p><h2 id="audit-details-title" data-audit-details-event>Audit-Ereignis</h2><p data-audit-details-time>—</p></div><button class="icon-button" type="button" data-dialog-close aria-label="Dialog schließen">×</button></header>
+              <dl class="admin-details-grid"><div><dt>Ergebnis</dt><dd data-audit-details-outcome>—</dd></div><div><dt>Mandant</dt><dd data-audit-details-tenant>—</dd></div><div><dt>Akteur-Typ</dt><dd data-audit-details-account-class>—</dd></div><div><dt>Akteur-Konto</dt><dd class="details-code-row"><code data-audit-details-account>—</code><button class="copy-icon-button" type="button" data-copy-details="[data-audit-details-account]" aria-label="Akteur-Kennung kopieren">Kopieren</button></dd></div><div><dt>Ereigniskennung</dt><dd class="details-code-row"><code data-audit-details-id>—</code><button class="copy-icon-button" type="button" data-copy-details="[data-audit-details-id]" aria-label="Ereigniskennung kopieren">Kopieren</button></dd></div><div><dt>Request-ID</dt><dd class="details-code-row"><code data-audit-details-request>—</code><button class="copy-icon-button" type="button" data-copy-details="[data-audit-details-request]" aria-label="Request-ID kopieren">Kopieren</button></dd></div><div><dt>Korrelations-ID</dt><dd class="details-code-row"><code data-audit-details-correlation>—</code><button class="copy-icon-button" type="button" data-copy-details="[data-audit-details-correlation]" aria-label="Korrelations-ID kopieren">Kopieren</button></dd></div></dl>
+              <footer class="admin-dialog-footer"><button class="button button-secondary" type="button" data-dialog-close>Schließen</button></footer>
+            </div>
+          </dialog>
+
+          <dialog class="admin-dialog" data-user-dialog aria-labelledby="create-user-title">
+            <form class="admin-dialog-form login-form" data-work-user-form>
+              <header class="admin-dialog-header"><div><p class="admin-breadcrumb">Core Identity</p><h2 id="create-user-title">Benutzer anlegen</h2><p>Ein tenantgebundenes Arbeitskonto mit temporärem Zugang erstellen.</p></div><button class="icon-button" type="button" data-dialog-close aria-label="Dialog schließen">×</button></header>
+              <div class="admin-dialog-content">
+                <label class="form-field"><span>Mandant</span><select name="tenant_id" data-work-form-tenant-select required><option value="">Mandant wählen</option></select></label>
+                <label class="form-field"><span>Organisationseinheit</span><select name="organizational_unit_id" data-work-unit-select required><option value="">Einheit wählen</option></select></label>
+                <div class="form-columns"><label class="form-field"><span>Vorname</span><input name="given_name" type="text" maxlength="120" required /></label><label class="form-field"><span>Nachname</span><input name="family_name" type="text" maxlength="120" required /></label></div>
+                <label class="form-field"><span>Anmeldename</span><input name="login_name" type="text" autocomplete="off" required /></label>
+                <label class="form-field"><span>Temporäres Passwort</span><input name="temporary_password" type="password" minlength="12" autocomplete="new-password" required /></label>
+                <label class="form-field"><span>Mitgliedschaftstyp</span><input name="membership_type" type="text" value="team.member" pattern="[a-z][a-z0-9._-]*" required /></label>
+              </div>
+              <footer class="admin-dialog-footer"><button class="button button-secondary" type="button" data-dialog-close>Abbrechen</button><button class="button button-primary" type="submit">Benutzer anlegen</button></footer>
+            </form>
+          </dialog>
+
+          <dialog class="admin-dialog admin-details-dialog" data-user-details-dialog aria-labelledby="user-details-title">
+            <div class="admin-dialog-form">
+              <header class="admin-dialog-header"><div><p class="admin-breadcrumb">Arbeitskonto</p><h2 id="user-details-title" data-details-name>Benutzerdetails</h2><p data-details-login>—</p></div><button class="icon-button" type="button" data-dialog-close aria-label="Dialog schließen">×</button></header>
+              <dl class="admin-details-grid"><div><dt>Status</dt><dd data-details-status>—</dd></div><div><dt>Organisationseinheit</dt><dd data-details-unit>—</dd></div><div><dt>Mitgliedschaft</dt><dd data-details-membership>—</dd></div><div><dt>Rollen</dt><dd data-details-roles>—</dd></div><div><dt>Kontokennung</dt><dd class="details-code-row"><code data-details-account-id>—</code><button class="copy-icon-button" type="button" data-copy-details="[data-details-account-id]" aria-label="Kontokennung kopieren">Kopieren</button></dd></div><div><dt>Party-Kennung</dt><dd class="details-code-row"><code data-details-party-id>—</code><button class="copy-icon-button" type="button" data-copy-details="[data-details-party-id]" aria-label="Party-Kennung kopieren">Kopieren</button></dd></div></dl>
+              <footer class="admin-dialog-footer"><button class="button button-secondary" type="button" data-dialog-close>Schließen</button><button class="button button-primary" type="button" data-manage-details-roles>Rollen verwalten</button></footer>
+            </div>
+          </dialog>
+
+          <dialog class="admin-dialog" data-role-dialog aria-labelledby="create-role-title">
+            <form class="admin-dialog-form login-form" data-role-form>
+              <header class="admin-dialog-header"><div><p class="admin-breadcrumb">Core Authorization</p><h2 id="create-role-title">Work-Rolle anlegen</h2><p>Eine tenantgebundene Rolle aus registrierten Work-Berechtigungen zusammenstellen.</p></div><button class="icon-button" type="button" data-dialog-close aria-label="Dialog schließen">×</button></header>
+              <div class="admin-dialog-content">
+                <label class="form-field"><span>Mandant</span><select name="tenant_id" data-role-form-tenant-select required><option value="">Mandant wählen</option></select></label>
+                <div class="form-columns"><label class="form-field"><span>Anzeigename</span><input name="display_name" type="text" maxlength="160" required /></label><label class="form-field"><span>Technischer Schlüssel</span><input name="role_key" type="text" maxlength="120" pattern="[a-z][a-z0-9.-]+" placeholder="z. B. team-viewer" required /></label></div>
+                <fieldset class="admin-choice-fieldset"><legend>Berechtigungen</legend><p>Es werden ausschließlich aktive Work-Berechtigungen angeboten.</p><div class="admin-choice-list" data-role-permission-options></div></fieldset>
+              </div>
+              <footer class="admin-dialog-footer"><button class="button button-secondary" type="button" data-dialog-close>Abbrechen</button><button class="button button-primary" type="submit">Rolle anlegen</button></footer>
+            </form>
+          </dialog>
+
+          <dialog class="admin-dialog" data-role-edit-dialog aria-labelledby="edit-role-title">
+            <form class="admin-dialog-form login-form" data-role-edit-form>
+              <header class="admin-dialog-header"><div><p class="admin-breadcrumb">Core Authorization</p><h2 id="edit-role-title">Work-Rolle bearbeiten</h2><p>Schlüssel <code data-role-edit-key>—</code> bleibt als stabiler Vertrag unverändert.</p></div><button class="icon-button" type="button" data-dialog-close aria-label="Dialog schließen">×</button></header>
+              <div class="admin-dialog-content">
+                <input type="hidden" name="role_id" /><input type="hidden" name="tenant_id" /><input type="hidden" name="version" />
+                <label class="form-field"><span>Anzeigename</span><input name="display_name" type="text" maxlength="160" required /></label>
+                <label class="form-field"><span>Status</span><select name="status" required><option value="active">Aktiv</option><option value="retired">Außer Betrieb</option></select></label>
+                <fieldset class="admin-choice-fieldset"><legend>Berechtigungen</legend><p>Die Auswahl ersetzt die bisherigen Berechtigungen dieser Rolle.</p><div class="admin-choice-list" data-role-edit-permission-options></div></fieldset>
+              </div>
+              <footer class="admin-dialog-footer"><button class="button button-secondary" type="button" data-dialog-close>Abbrechen</button><button class="button button-primary" type="submit">Rolle speichern</button></footer>
+            </form>
+          </dialog>
+
+          <dialog class="admin-dialog" data-role-assignment-dialog aria-labelledby="assign-role-title">
+            <form class="admin-dialog-form login-form" data-role-assignment-form>
+              <header class="admin-dialog-header"><div><p class="admin-breadcrumb">Rollenzuweisung</p><h2 id="assign-role-title" data-role-assignment-name>Rollen verwalten</h2><p data-role-assignment-login>—</p></div><button class="icon-button" type="button" data-dialog-close aria-label="Dialog schließen">×</button></header>
+              <div class="admin-dialog-content"><input type="hidden" name="account_id" /><input type="hidden" name="tenant_id" /><div class="admin-governance-note is-compact"><span class="admin-governance-icon" aria-hidden="true">i</span><div><strong>Wirksam für dieses Arbeitskonto</strong><p>Die Auswahl ersetzt die aktuell aktiven Work-Rollen. Systemrollen sind geschützt, können dem Konto aber zugewiesen oder entzogen werden.</p></div></div><fieldset class="admin-choice-fieldset"><legend>Aktive Rollen</legend><div class="admin-choice-list" data-role-assignment-options></div></fieldset></div>
+              <footer class="admin-dialog-footer"><button class="button button-secondary" type="button" data-dialog-close>Abbrechen</button><button class="button button-primary" type="submit">Zuweisung speichern</button></footer>
+            </form>
+          </dialog>
+
+          <dialog class="admin-dialog" data-tenant-dialog aria-labelledby="create-tenant-title">
+            <form class="admin-dialog-form login-form" data-tenant-form>
+              <header class="admin-dialog-header"><div><p class="admin-breadcrumb">Organisation</p><h2 id="create-tenant-title">Mandant anlegen</h2><p>Eine neue isolierte Unternehmens- und Sicherheitsgrenze erstellen.</p></div><button class="icon-button" type="button" data-dialog-close aria-label="Dialog schließen">×</button></header>
+              <div class="admin-dialog-content"><label class="form-field"><span>Name</span><input name="name" type="text" maxlength="200" required /></label><label class="form-field"><span>Standardsprache</span><input name="default_locale" type="text" value="de-DE" required /></label><label class="form-field"><span>Zeitzone</span><input name="default_timezone" type="text" value="Europe/Berlin" required /></label></div>
+              <footer class="admin-dialog-footer"><button class="button button-secondary" type="button" data-dialog-close>Abbrechen</button><button class="button button-primary" type="submit">Mandant anlegen</button></footer>
+            </form>
+          </dialog>
+
+          <dialog class="admin-dialog" data-tenant-edit-dialog aria-labelledby="edit-tenant-title">
+            <form class="admin-dialog-form login-form" data-tenant-edit-form>
+              <header class="admin-dialog-header"><div><p class="admin-breadcrumb">Organisation</p><h2 id="edit-tenant-title">Mandant bearbeiten</h2><p>Stammdaten und Lebenszyklusstatus versioniert ändern.</p></div><button class="icon-button" type="button" data-dialog-close aria-label="Dialog schließen">×</button></header>
+              <div class="admin-dialog-content">
+                <input type="hidden" name="tenant_id" /><input type="hidden" name="version" />
+                <label class="form-field"><span>Name</span><input name="name" type="text" maxlength="200" required /></label>
+                <label class="form-field"><span>Status</span><select name="status" required><option value="active">Aktiv</option><option value="suspended">Ausgesetzt</option><option value="archived">Archiviert</option></select></label>
+                <label class="form-field"><span>Standardsprache</span><input name="default_locale" type="text" required /></label>
+                <label class="form-field"><span>Zeitzone</span><input name="default_timezone" type="text" required /></label>
+              </div>
+              <footer class="admin-dialog-footer"><button class="button button-secondary" type="button" data-dialog-close>Abbrechen</button><button class="button button-primary" type="submit">Mandant speichern</button></footer>
+            </form>
+          </dialog>
+
+          <dialog class="admin-dialog" data-unit-dialog aria-labelledby="create-unit-title">
+            <form class="admin-dialog-form login-form" data-unit-form>
+              <header class="admin-dialog-header"><div><p class="admin-breadcrumb">Organisation</p><h2 id="create-unit-title">Organisationseinheit anlegen</h2><p>Eine Einheit innerhalb des ausgewählten Mandanten erstellen.</p></div><button class="icon-button" type="button" data-dialog-close aria-label="Dialog schließen">×</button></header>
+              <div class="admin-dialog-content"><label class="form-field"><span>Mandant</span><select name="tenant_id" data-unit-form-tenant-select required><option value="">Mandant wählen</option></select></label><label class="form-field"><span>Name</span><input name="name" type="text" maxlength="200" required /></label><label class="form-field"><span>Typ</span><input name="unit_type" type="text" value="team" pattern="[a-z][a-z0-9._-]*" required /></label><label class="form-field"><span>Übergeordnete Einheit (optional)</span><select name="parent_id" data-parent-unit-select><option value="">Keine</option></select></label></div>
+              <footer class="admin-dialog-footer"><button class="button button-secondary" type="button" data-dialog-close>Abbrechen</button><button class="button button-primary" type="submit">Einheit anlegen</button></footer>
+            </form>
+          </dialog>
+
+          <dialog class="admin-dialog" data-unit-edit-dialog aria-labelledby="edit-unit-title">
+            <form class="admin-dialog-form login-form" data-unit-edit-form>
+              <header class="admin-dialog-header"><div><p class="admin-breadcrumb">Organisation</p><h2 id="edit-unit-title">Organisationseinheit bearbeiten</h2><p>Hierarchie, Bezeichnung und Status mit Versionsschutz ändern.</p></div><button class="icon-button" type="button" data-dialog-close aria-label="Dialog schließen">×</button></header>
+              <div class="admin-dialog-content">
+                <input type="hidden" name="tenant_id" /><input type="hidden" name="unit_id" /><input type="hidden" name="version" />
+                <label class="form-field"><span>Name</span><input name="name" type="text" maxlength="200" required /></label>
+                <label class="form-field"><span>Typ</span><input name="unit_type" type="text" pattern="[a-z][a-z0-9._-]*" required /></label>
+                <label class="form-field"><span>Übergeordnete Einheit (optional)</span><select name="parent_id" data-unit-edit-parent-select><option value="">Keine</option></select></label>
+                <label class="form-field"><span>Status</span><select name="status" required><option value="active">Aktiv</option><option value="archived">Archiviert</option></select></label>
+              </div>
+              <footer class="admin-dialog-footer"><button class="button button-secondary" type="button" data-dialog-close>Abbrechen</button><button class="button button-primary" type="submit">Einheit speichern</button></footer>
+            </form>
+          </dialog>
+        </main>
+      </div>
+    </div>
+  </body>
+</html>

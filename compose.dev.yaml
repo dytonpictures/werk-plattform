@@ -1,0 +1,19 @@
+# Dieses Profil stellt nur die Infrastruktur fuer native Entwicklungsprozesse
+# bereit. Anwendungsdienste werden direkt auf dem Host gestartet.
+services:
+  postgres:
+    ports:
+      - "127.0.0.1:${WERK_DEV_POSTGRES_PORT:-55432}:5432"
+    volumes:
+      - ./deploy/postgres:/bootstrap:ro
+
+  valkey:
+    ports:
+      - "127.0.0.1:${WERK_DEV_VALKEY_PORT:-56379}:6379"
+
+# Das normale Deployment haelt das Datennetz absichtlich intern. Fuer native
+# Host-Prozesse muss das isolierte Dev-Netz Portweiterleitungen zulassen; die
+# Dienste bleiben durch die explizite 127.0.0.1-Bindung dennoch lokal.
+networks:
+  data:
+    internal: false

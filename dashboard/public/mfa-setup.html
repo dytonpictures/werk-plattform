@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="de" data-density="cozy">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>WERK · MFA einrichten</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <script src="/mfa.js" defer></script>
+  </head>
+  <body data-mfa-page="setup">
+    <div class="login-shell">
+      <div class="login-background" aria-hidden="true"><div class="login-grid"></div><div class="login-halo"></div></div>
+      <header class="login-header"><a class="brand" href="/"><span class="brand-mark"><span class="brand-mark-dot"></span></span><span class="brand-name">WERK</span><span class="brand-separator"></span><span class="brand-tag">Core Identity</span></a></header>
+      <main class="login-card mfa-card">
+        <p class="login-kicker">Administrationsschutz</p>
+        <div class="login-heading"><h1>Authenticator einrichten</h1><p>Für Administrationskonten ist ein zweiter Faktor erforderlich.</p></div>
+        <form class="login-form" data-mfa-enrollment-form>
+          <label class="form-field"><span>Aktuelles Passwort</span><input name="current_password" type="password" autocomplete="current-password" required /></label>
+          <label class="form-field"><span>Name des Geräts</span><input name="display_name" type="text" value="Meine Authenticator-App" maxlength="120" required /></label>
+          <button class="button button-primary" type="submit">Einrichtung starten</button>
+        </form>
+        <section data-mfa-confirmation hidden>
+          <div class="mfa-enrollment-result">
+            <figure class="mfa-qr-panel">
+              <img data-mfa-qr width="256" height="256" alt="QR-Code für die Authenticator-App" />
+              <figcaption>Mit der Authenticator-App scannen</figcaption>
+            </figure>
+            <div class="mfa-manual-setup">
+              <p>Alternativ können Sie den Einrichtungsschlüssel manuell übernehmen.</p>
+              <button class="mfa-copy-field" type="button" data-copy-source="[data-mfa-secret]" aria-label="Einrichtungsschlüssel kopieren">
+                <span class="mfa-copy-label">Einrichtungsschlüssel</span>
+                <code class="mfa-secret" data-mfa-secret></code>
+                <span class="mfa-copy-action" data-copy-action>Kopieren</span>
+              </button>
+              <details>
+                <summary>Technischen otpauth-Link anzeigen</summary>
+                <button class="mfa-copy-field mfa-copy-uri" type="button" data-copy-source="[data-mfa-uri]" aria-label="Technischen otpauth-Link kopieren">
+                  <code class="mfa-uri" data-mfa-uri></code>
+                  <span class="mfa-copy-action" data-copy-action>Kopieren</span>
+                </button>
+              </details>
+            </div>
+          </div>
+          <form class="login-form" data-mfa-confirmation-form>
+            <input name="factor_id" type="hidden" />
+            <label class="form-field"><span>Sechsstelliger Code</span><input name="code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" required /></label>
+            <button class="button button-primary" type="submit">Einrichtung bestätigen</button>
+          </form>
+        </section>
+        <section data-mfa-recovery hidden>
+          <h2>Recovery-Codes</h2>
+          <p>Diese Codes werden nur einmal angezeigt. Speichern Sie sie getrennt und sicher.</p>
+          <pre class="recovery-codes" data-recovery-codes></pre>
+          <button class="button button-primary" data-mfa-finish type="button">Administration öffnen</button>
+        </section>
+        <p class="form-notice" data-mfa-notice role="status" hidden></p>
+      </main>
+      <footer class="login-footer"><span class="mono">WERK · MFA SETUP</span><span>Administrationskonto</span></footer>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,16 @@
+services:
+  dashboard:
+    image: ghcr.io/dytonpictures/werk-plattform-dashboard:${WERK_BUILD_VERSION:?WERK_BUILD_VERSION must be set}
+    pull_policy: always
+
+  api:
+    image: ghcr.io/dytonpictures/werk-plattform-api:${WERK_BUILD_VERSION:?WERK_BUILD_VERSION must be set}
+    pull_policy: always
+
+  worker:
+    image: ghcr.io/dytonpictures/werk-plattform-worker:${WERK_BUILD_VERSION:?WERK_BUILD_VERSION must be set}
+    pull_policy: always
+
+  migrate:
+    image: ghcr.io/dytonpictures/werk-plattform-migrate:${WERK_BUILD_VERSION:?WERK_BUILD_VERSION must be set}
+    pull_policy: always
