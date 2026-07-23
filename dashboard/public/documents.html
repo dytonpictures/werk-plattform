@@ -29,7 +29,7 @@
             </div>
             <div class="documents-scope-card" aria-label="Aktive Dokumentansicht">
               <span class="documents-scope-icon" aria-hidden="true">D</span>
-              <span><strong>Meine Dokumente</strong><small>Serverseitig auf den Ersteller begrenzt</small></span>
+              <span><strong>Eigene und geteilte Dokumente</strong><small>Serverseitig auf direkte Sichtbarkeit begrenzt</small></span>
             </div>
           </header>
 
@@ -42,18 +42,20 @@
               <label class="documents-search-field"><span>Titel</span><span class="documents-input-wrap"><span aria-hidden="true">⌕</span><input type="search" name="q" maxlength="120" autocomplete="off" placeholder="Dokumenttitel durchsuchen" /></span></label>
               <label><span>Status</span><select name="status"><option value="active">Aktiv</option><option value="archived">Archiviert</option></select></label>
               <label><span>Klassifikation</span><select name="classification"><option value="">Alle Stufen</option><option value="internal">Intern</option><option value="confidential">Vertraulich</option><option value="restricted">Streng vertraulich</option></select></label>
+              <label><span>Zugriff</span><select name="access"><option value="">Alle sichtbaren</option><option value="created-by-me">Von mir erstellt</option><option value="shared-directly-with-me">Direkt mit mir geteilt</option></select></label>
               <div class="documents-filter-actions"><button class="button button-primary" type="submit">Anwenden</button><button class="button button-secondary" type="button" data-documents-filter-reset>Zurücksetzen</button></div>
             </form>
           </section>
 
           <div class="documents-layout">
             <section class="documents-list-panel" aria-labelledby="documents-list-title">
-              <div class="documents-panel-heading"><div><p class="admin-breadcrumb">Persönliche Ablage</p><h2 id="documents-list-title">Sichtbare Dokumente</h2></div><span class="status-badge">Leseansicht</span></div>
+              <div class="documents-panel-heading"><div><p class="admin-breadcrumb">Meine Dokumentansicht</p><h2 id="documents-list-title">Sichtbare Dokumente</h2></div><span class="status-badge">Leseansicht</span></div>
               <ol class="documents-list" data-documents-list aria-live="polite"><li class="documents-list-loading"><span></span><span></span><span></span></li></ol>
-              <div class="documents-empty-state" data-documents-empty hidden><span class="documents-empty-mark" aria-hidden="true">D</span><h3>Noch keine Dokumente</h3><p>Für diese Ansicht sind keine veröffentlichten Dokumente sichtbar.</p></div>
+              <div class="documents-empty-state" data-documents-empty hidden><span class="documents-empty-mark" aria-hidden="true">D</span><h3>Noch keine sichtbaren Dokumente</h3><p>Eigene und direkt mit Ihnen geteilte Dokumente erscheinen hier.</p></div>
               <div class="documents-pagination"><button class="button button-secondary" type="button" data-documents-more hidden>Weitere Dokumente</button></div>
             </section>
 
+            <p class="visually-hidden" data-documents-detail-status role="status" aria-live="polite" aria-atomic="true"></p>
             <aside class="documents-detail-panel" data-documents-detail tabindex="-1" aria-labelledby="documents-detail-title" aria-busy="false">
               <div class="documents-detail-empty">
                 <span class="documents-document-glyph" aria-hidden="true"><i></i><i></i><i></i></span>

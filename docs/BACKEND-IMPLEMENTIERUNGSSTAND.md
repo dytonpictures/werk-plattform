@@ -39,13 +39,13 @@ geplant
 | Backend-Baustein | Reifegrad | Vorhanden | Nächste verbindliche Grenze |
 |---|---|---|---|
 | Identity und getrennte Zugriffsebenen | integriert | Konten, Sessions, atomare Passwort-/MFA-Sessionrotation, API-Keys, Audiences, Provider-Bindings | Re-Authentifizierung und vollständige Credential-Lebenszyklen |
-| Native TLS-/mTLS-Servergrenze | sicherheitsgeprüft | direkter Go-TLS-Server, mTLS, Rotation, HSTS, vertrauenswürdige Proxy-Netze | PKI-Ausstellung, Sperrung und produktiver Zertifikatsbetrieb |
+| Native TLS-/mTLS-Servergrenze | sicherheitsgeprüft | direkter Go-TLS-Server, mTLS, vollständige Ablehnung teilweise ungültiger CA-Bundles, Rotation, HSTS, vertrauenswürdige Proxy-Netze | PKI-Ausstellung, Sperrung und produktiver Zertifikatsbetrieb |
 | Organisation und Tenancy | Vertrag festgelegt | Tenant-Kontext, Parteien und erste Organisationseinheiten | Hierarchie-, Abteilungs- und delegierte Verwaltungsverträge |
 | Policy und Ressourcen | implementiert | globale Ressourcen, App-Zugriff und erste Policy-Entscheidungen | persistente Gruppen-/Abteilungsregeln, explizite App-Freigaben und Konfliktregeln |
 | Audit und Ereignisse | integriert | Security-Audit, Outbox, Kafka-Export und Tagging | Aufbewahrung, Reconciliation, SIEM-Vertrag und Betriebsalarme |
 | Service-/Provider-Registry | implementiert | versionierte Dienst-, Capability-, Provider- und Binding-Verträge mit Scope-/Tenant-Auflösung | erster typisierter Domänenverbraucher sowie auditierte Verwaltungsabläufe |
-| Konfiguration, Secrets, Keys und Zertifikate | dokumentiert | MFA-Keyring und dateibasierter Zertifikatsprovider | Provider-Schnittstellen, Metadatenregistry, Rotation und Sperrung |
-| Dokumente und Storage | Vertrag festgelegt | Dokument-/Blob-Typen, Migration und Transfergrundlage | echter Objektprovider, Streaming, Reconciliation, Backup und Recovery |
+| Konfiguration, Secrets, Keys und Zertifikate | Vertrag festgelegt | getrennte Certificate-, SigningKey- und Secret-Ports sowie bestehender MFA-Keyring und dateibasierter TLS-Pfad | least-privilege Registry-Reader, providerlokale Konfiguration und erster nativer TLS-Verbraucher |
+| Dokumente und Storage | Leseschnitt integriert | Dokument-/Blob-Typen, Migration, direkte Kontosichtbarkeit und tenantgesicherte Work-Metadaten-API | atomarer Grant-/Revoke-Service mit Audit/Outbox, danach Objektprovider, Streaming, Reconciliation, Backup und Recovery |
 | Jobs, Aufgaben und Workflows | geplant | Outbox-Worker als erste Laufzeitbasis | Job-/Scheduler-Vertrag vor fachlichen Workflows |
 | Suche und Projektionen | geplant | keine produktive Suchprojektion | tenantgesicherter Index-, Rebuild- und Löschvertrag |
 | Benachrichtigungen und Integrationen | geplant | keine gemeinsame Providergrenze | Notification-, Webhook- und Zustellvertrag |

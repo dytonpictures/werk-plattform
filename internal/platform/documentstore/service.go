@@ -1,7 +1,7 @@
 // Package documentstore exposes tenant-bound, provider-independent document
-// metadata to the work API. The first read slice is deliberately limited to
-// documents created by the authenticated actor; shared visibility needs an
-// explicit later document-local contract.
+// metadata to the work API. The read slice is limited to documents created by
+// the authenticated actor or exposed through an active, direct document-local
+// visibility binding.
 package documentstore
 
 import (
@@ -22,7 +22,7 @@ const (
 	DefaultLimit      = 25
 	MaximumLimit      = 100
 	maximumSearchSize = 120
-	VisibilityScope   = "created-by-me"
+	VisibilityScope   = "created-or-directly-shared-with-me"
 )
 
 var (
@@ -44,6 +44,7 @@ type ListQuery struct {
 	Search         string
 	Status         string
 	Classification string
+	AccessReason   string
 	Cursor         *Cursor
 }
 
@@ -70,6 +71,7 @@ type Summary struct {
 	CreatedAt      time.Time          `json:"created_at"`
 	UpdatedAt      time.Time          `json:"updated_at"`
 	Version        uint64             `json:"version"`
+	AccessReason   string             `json:"access_reason"`
 	LatestVersion  LatestVersionView  `json:"latest_version"`
 	Classification ClassificationView `json:"classification"`
 }
@@ -102,6 +104,7 @@ func NormalizeListQuery(query ListQuery) (ListQuery, error) {
 	query.Search = strings.TrimSpace(query.Search)
 	query.Status = strings.TrimSpace(query.Status)
 	query.Classification = strings.TrimSpace(query.Classification)
+	query.AccessReason = strings.TrimSpace(query.AccessReason)
 	if query.Limit == 0 {
 		query.Limit = DefaultLimit
 	}
@@ -114,6 +117,10 @@ func NormalizeListQuery(query ListQuery) (ListQuery, error) {
 	if query.Classification != "" && query.Classification != string(documents.ClassificationInternal) &&
 		query.Classification != string(documents.ClassificationConfidential) &&
 		query.Classification != string(documents.ClassificationRestricted) {
+		return ListQuery{}, ErrInvalidQuery
+	}
+	if query.AccessReason != "" && query.AccessReason != string(documents.AccessReasonCreatedByMe) &&
+		query.AccessReason != string(documents.AccessReasonSharedDirectlyWithMe) {
 		return ListQuery{}, ErrInvalidQuery
 	}
 	if query.Cursor != nil && (query.Cursor.UpdatedAt.IsZero() || !ValidDocumentID(query.Cursor.ID)) {
@@ -141,6 +148,8 @@ func (service *Service) List(ctx context.Context, actor identity.AuthenticatedAc
 		rows, err := tx.Query(ctx, `
 			SELECT document.id::text, document.title, document.status, document.source_module,
 			       document.created_at, document.updated_at, document.version,
+			       CASE WHEN document.created_by_account_id=$2::uuid
+			            THEN 'created-by-me' ELSE 'shared-directly-with-me' END,
 			       latest_version.id::text, latest_version.version_number,
 			       latest_version.source, latest_version.published_at,
 			       classification.revision, classification.classification,
@@ -162,17 +171,29 @@ func (service *Service) List(ctx context.Context, actor identity.AuthenticatedAc
 			  ORDER BY revision.revision DESC
 			  LIMIT 1
 			) AS classification ON true
+			LEFT JOIN LATERAL (
+			  SELECT true AS active
+			  FROM werk_core.document_account_visibility_bindings AS binding
+			  WHERE binding.tenant_id=document.tenant_id
+			    AND binding.document_id=document.id
+			    AND binding.grantee_account_id=$2::uuid
+			    AND binding.revoked_at IS NULL
+			  LIMIT 1
+			) AS direct_visibility ON true
 			WHERE document.tenant_id=$1::uuid
-			  AND document.created_by_account_id=$2::uuid
-			  AND ($3::text='' OR document.status=$3)
-			  AND ($4::text='' OR classification.classification=$4)
-			  AND ($5::text='' OR position(lower($5) in lower(document.title)) > 0)
-			  AND ($6::timestamptz IS NULL OR document.updated_at < $6
-			       OR (document.updated_at=$6 AND document.id < $7::uuid))
+			  AND (document.created_by_account_id=$2::uuid OR COALESCE(direct_visibility.active, false))
+			  AND ($3::text='' OR $3=CASE WHEN document.created_by_account_id=$2::uuid
+			       THEN 'created-by-me' ELSE 'shared-directly-with-me' END)
+			  AND ($4::text='' OR document.status=$4)
+			  AND ($5::text='' OR classification.classification=$5)
+			  AND ($6::text='' OR position(lower($6) in lower(document.title)) > 0)
+			  AND ($7::timestamptz IS NULL OR document.updated_at < $7
+			       OR (document.updated_at=$7 AND document.id < $8::uuid))
 			ORDER BY document.updated_at DESC, document.id DESC
-			LIMIT $8
-		`, actor.TenantID.String(), formatUUID(actor.AccountID), query.Status, query.Classification,
-			query.Search, cursorTime, cursorID, query.Limit+1)
+			LIMIT $9
+		`, actor.TenantID.String(), formatUUID(actor.AccountID), query.AccessReason,
+			query.Status, query.Classification, query.Search,
+			cursorTime, cursorID, query.Limit+1)
 		if err != nil {
 			return err
 		}
@@ -181,7 +202,7 @@ func (service *Service) List(ctx context.Context, actor identity.AuthenticatedAc
 			var item Summary
 			if err := rows.Scan(
 				&item.ID, &item.Title, &item.Status, &item.SourceModule,
-				&item.CreatedAt, &item.UpdatedAt, &item.Version,
+				&item.CreatedAt, &item.UpdatedAt, &item.Version, &item.AccessReason,
 				&item.LatestVersion.ID, &item.LatestVersion.VersionNumber,
 				&item.LatestVersion.Source, &item.LatestVersion.PublishedAt,
 				&item.Classification.Revision, &item.Classification.Level,
@@ -217,6 +238,8 @@ func (service *Service) Detail(ctx context.Context, actor identity.Authenticated
 		err := tx.QueryRow(ctx, `
 			SELECT document.id::text, document.title, document.status, document.source_module,
 			       document.created_at, document.updated_at, document.version,
+			       CASE WHEN document.created_by_account_id=$3::uuid
+			            THEN 'created-by-me' ELSE 'shared-directly-with-me' END,
 			       latest_version.id::text, latest_version.version_number,
 			       latest_version.source, latest_version.published_at,
 			       classification.revision, classification.classification,
@@ -238,11 +261,20 @@ func (service *Service) Detail(ctx context.Context, actor identity.Authenticated
 			  ORDER BY revision.revision DESC
 			  LIMIT 1
 			) AS classification ON true
+			LEFT JOIN LATERAL (
+			  SELECT true AS active
+			  FROM werk_core.document_account_visibility_bindings AS binding
+			  WHERE binding.tenant_id=document.tenant_id
+			    AND binding.document_id=document.id
+			    AND binding.grantee_account_id=$3::uuid
+			    AND binding.revoked_at IS NULL
+			  LIMIT 1
+			) AS direct_visibility ON true
 			WHERE document.tenant_id=$1::uuid AND document.id=$2::uuid
-			  AND document.created_by_account_id=$3::uuid
+			  AND (document.created_by_account_id=$3::uuid OR COALESCE(direct_visibility.active, false))
 		`, actor.TenantID.String(), documentID, formatUUID(actor.AccountID)).Scan(
 			&detail.ID, &detail.Title, &detail.Status, &detail.SourceModule,
-			&detail.CreatedAt, &detail.UpdatedAt, &detail.Version,
+			&detail.CreatedAt, &detail.UpdatedAt, &detail.Version, &detail.AccessReason,
 			&detail.LatestVersion.ID, &detail.LatestVersion.VersionNumber,
 			&detail.LatestVersion.Source, &detail.LatestVersion.PublishedAt,
 			&detail.Classification.Revision, &detail.Classification.Level,

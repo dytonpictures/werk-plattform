@@ -177,14 +177,23 @@ fachlichen Felder noch nicht; Änderungen vorbehalten.
 **Erster Leseschnitt 2026-07-22:** Vor dem Bytepfad ist ein bewusst schmaler
 Work-Vertrag für Dokumentliste und Detailansicht vorbereitet. Die Collection-
 Berechtigung `core.documents.document.list` autorisiert ausschließlich die
-schmale persönliche Metadatenprojektion. Erst die Detailansicht benötigt die
-konkrete Ressourcenberechtigung `core.documents.document.read`.
-Core Documents begrenzt die dokumentlokale Sichtbarkeit in diesem ersten
-Schnitt auf `created_by_account_id` des authentifizierten Work-Kontos. Das ist
-eine fail-closed persönliche Ansicht, keine Aussage, dass alle Dokumente eines
-Tenants allgemein sichtbar seien. Dokumente technischer Producer und spätere
-geteilte Dokumente bleiben unsichtbar, bis ein eigener Binding-/Sichtbarkeits-
-vertrag angenommen ist.
+persönliche Metadatenprojektion. Erst die Detailansicht benötigt die konkrete
+Ressourcenberechtigung `core.documents.document.read`.
+
+**Direkte Sichtbarkeit 2026-07-22:**
+[`ADR-026`](adr/ADR-026-direkte-dokument-sichtbarkeitsbindungen.md) erweitert
+die dokumentlokale Regel von `created_by_account_id` um aktive direkte
+Bindungen an ein Work-Konto. Eine Bindung ist keine Plattformberechtigung und
+gibt weder Update, Versionierung, Download noch Storage frei. Der API-Vertrag
+liefert nur den semantischen
+Zugriffsgrund `created-by-me` oder `shared-directly-with-me`; Account-, Grantor-
+und Binding-IDs bleiben intern. Widerrufene Bindungen sind für neue
+Lesetransaktionen sofort unwirksam.
+
+Der öffentliche Schreibpfad für Freigabe und Widerruf bleibt geschlossen, bis
+der tenantgebundene Application Service Bindung, strukturierten Audit und
+Outbox-Ereignis atomar speichern kann. Dokumente technischer Producer bleiben
+ohne späteren Owner-/Steward-Vertrag nicht teilbar.
 
 Die API gibt ausschließlich Titel, Dokumentstatus, Erzeugermodul,
 Klassifikation, Aufbewahrungszuordnung und veröffentlichte Versionsmetadaten

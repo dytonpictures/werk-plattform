@@ -1,6 +1,7 @@
 package transportsecurity
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
@@ -98,6 +99,7 @@ type serverMaterialProvider struct {
 	mu         sync.Mutex
 	material   *serverMaterial
 	checkAfter time.Time
+	failure    error
 }
 
 func newServerTLSConfig(options ServerOptions, now func() time.Time, checkInterval time.Duration) (*tls.Config, error) {
@@ -169,6 +171,9 @@ func (provider *serverMaterialProvider) current() (*serverMaterial, error) {
 	defer provider.mu.Unlock()
 
 	now := provider.now()
+	if now.Before(provider.checkAfter) && provider.failure != nil {
+		return nil, provider.failure
+	}
 	if provider.material != nil && now.Before(provider.checkAfter) {
 		if err := validateLeafTime(provider.material.leaf, now); err != nil {
 			return nil, err
@@ -178,25 +183,33 @@ func (provider *serverMaterialProvider) current() (*serverMaterial, error) {
 
 	files, err := readMaterial(provider.options)
 	if err != nil {
-		return nil, err
+		return provider.failUntilNextCheck(now, err)
 	}
 	if provider.material != nil && provider.material.version == files.version {
 		if err := validateLeafTime(provider.material.leaf, now); err != nil {
 			return nil, err
 		}
 		provider.checkAfter = now.Add(provider.checkInterval)
+		provider.failure = nil
 		return provider.material, nil
 	}
 
 	loaded, err := loadServerMaterial(provider.options, files, now)
 	if err != nil {
-		// Do not advance checkAfter. A partially replaced or otherwise invalid
-		// certificate set is retried on the next handshake and never activated.
-		return nil, err
+		// Keep failing closed, but do not repeat file parsing and certificate
+		// decoding on every handshake while the retry interval is active.
+		return provider.failUntilNextCheck(now, err)
 	}
 	provider.material = loaded
 	provider.checkAfter = now.Add(provider.checkInterval)
+	provider.failure = nil
 	return loaded, nil
+}
+
+func (provider *serverMaterialProvider) failUntilNextCheck(now time.Time, err error) (*serverMaterial, error) {
+	provider.failure = err
+	provider.checkAfter = now.Add(provider.checkInterval)
+	return nil, err
 }
 
 func readMaterial(options ServerOptions) (materialFiles, error) {
@@ -306,24 +319,37 @@ func validateLeafTime(certificate *x509.Certificate, now time.Time) error {
 
 func loadCAPool(contents []byte, now time.Time) (*x509.CertPool, error) {
 	pool := x509.NewCertPool()
-	validAuthorities := 0
-	for remaining := contents; len(remaining) > 0; {
+	authorities := 0
+	for remaining := bytes.TrimSpace(contents); len(remaining) > 0; {
+		begin := bytes.Index(remaining, []byte("-----BEGIN "))
+		if begin != 0 {
+			return nil, errors.New("client CA bundle contains non-PEM data")
+		}
 		block, rest := pem.Decode(remaining)
 		if block == nil {
-			break
+			return nil, errors.New("client CA bundle contains malformed PEM")
 		}
-		remaining = rest
 		if block.Type != "CERTIFICATE" {
-			continue
+			return nil, fmt.Errorf("client CA bundle contains forbidden PEM block %q", block.Type)
 		}
-		certificate, parseErr := x509.ParseCertificate(block.Bytes)
-		if parseErr != nil || !certificate.IsCA || now.Before(certificate.NotBefore) || !now.Before(certificate.NotAfter) {
-			continue
+		certificate, err := x509.ParseCertificate(block.Bytes)
+		if err != nil {
+			return nil, fmt.Errorf("parse client CA certificate: %w", err)
+		}
+		if !certificate.BasicConstraintsValid || !certificate.IsCA {
+			return nil, errors.New("client CA bundle contains a non-CA certificate")
+		}
+		if certificate.KeyUsage != 0 && certificate.KeyUsage&x509.KeyUsageCertSign == 0 {
+			return nil, errors.New("client CA bundle contains a certificate without certificate-signing usage")
+		}
+		if now.Before(certificate.NotBefore) || !now.Before(certificate.NotAfter) {
+			return nil, errors.New("client CA bundle contains a certificate outside its validity period")
 		}
 		pool.AddCert(certificate)
-		validAuthorities++
+		authorities++
+		remaining = bytes.TrimSpace(rest)
 	}
-	if validAuthorities == 0 {
+	if authorities == 0 {
 		return nil, errors.New("client CA bundle contains no currently valid certificate authority")
 	}
 	return pool, nil

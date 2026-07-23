@@ -211,16 +211,20 @@ func (request ResolveRequest) Validate() error {
 	return nil
 }
 
-// Resolution is the immutable, operation-bound result of a successful lookup.
-// Zero tenant IDs are meaningful only together with their installation scope or
-// boundary. Keeping both tenant coordinates prevents an installation-scoped
-// provider from erasing the tenant boundary of the operation it serves.
+// Resolution is the operation-bound snapshot of a successful lookup. It is
+// freely constructible application data, not an authorization token. Consumers
+// must validate it and fully re-resolve the service, capability, provider and
+// binding when freshness is security relevant. Revisions aid diagnostics but
+// are not a substitute for that lookup. Zero tenant IDs are meaningful only
+// together with their installation scope or boundary.
 type Resolution struct {
 	ProviderID              ProviderID
 	ProviderKey             string
 	AdapterKey              string
 	ProviderConfigScope     ConfigScope
 	ProviderTenantID        tenancy.TenantID
+	ProviderRevision        uint64
+	BindingRevision         uint64
 	RegistryContractVersion uint64
 	ServiceKey              string
 	ServiceVersion          uint64
@@ -228,6 +232,51 @@ type Resolution struct {
 	CapabilityVersion       uint64
 	OperationBoundary       OperationBoundary
 	OperationTenantID       tenancy.TenantID
+}
+
+func (resolution Resolution) Validate() error {
+	providerPrefix := resolution.ServiceKey + ".provider."
+	capabilityPrefix := resolution.ServiceKey + ".capability."
+	if resolution.ProviderID.IsZero() || !resource.ValidKey(resolution.ServiceKey) ||
+		!resource.ValidKey(resolution.ProviderKey) ||
+		!strings.HasPrefix(resolution.ProviderKey, providerPrefix) ||
+		len(resolution.ProviderKey) == len(providerPrefix) ||
+		!resource.ValidKey(resolution.AdapterKey) ||
+		!resource.ValidKey(resolution.CapabilityKey) ||
+		!strings.HasPrefix(resolution.CapabilityKey, capabilityPrefix) ||
+		len(resolution.CapabilityKey) == len(capabilityPrefix) ||
+		resolution.ProviderRevision == 0 || resolution.BindingRevision == 0 ||
+		resolution.RegistryContractVersion != ContractVersionV1 ||
+		resolution.ServiceVersion == 0 || resolution.CapabilityVersion == 0 ||
+		!resolution.ProviderConfigScope.Valid() || !resolution.OperationBoundary.Valid() {
+		return ErrInvalid
+	}
+	switch resolution.ProviderConfigScope {
+	case ConfigScopeInstallation:
+		if !resolution.ProviderTenantID.IsZero() {
+			return ErrInvalid
+		}
+	case ConfigScopeTenant:
+		if resolution.ProviderTenantID.IsZero() {
+			return ErrInvalid
+		}
+	default:
+		return ErrInvalid
+	}
+	switch resolution.OperationBoundary {
+	case OperationBoundaryInstallation:
+		if !resolution.OperationTenantID.IsZero() || resolution.ProviderConfigScope != ConfigScopeInstallation {
+			return ErrInvalid
+		}
+	case OperationBoundaryTenant:
+		if resolution.OperationTenantID.IsZero() ||
+			(resolution.ProviderConfigScope == ConfigScopeTenant && resolution.ProviderTenantID != resolution.OperationTenantID) {
+			return ErrInvalid
+		}
+	default:
+		return ErrInvalid
+	}
+	return nil
 }
 
 // Resolve validates one explicit registration and binding against exact
@@ -268,6 +317,8 @@ func Resolve(
 		ProviderKey:             provider.ProviderKey,
 		AdapterKey:              provider.AdapterKey,
 		ProviderConfigScope:     provider.ConfigScope,
+		ProviderRevision:        provider.Revision,
+		BindingRevision:         binding.Revision,
 		RegistryContractVersion: provider.RegistryContractVersion,
 		ServiceKey:              service.ServiceKey,
 		ServiceVersion:          service.Version,
@@ -280,6 +331,9 @@ func Resolve(
 	}
 	if request.TenantID != nil {
 		resolution.OperationTenantID = *request.TenantID
+	}
+	if resolution.Validate() != nil {
+		return Resolution{}, ErrUnresolved
 	}
 	return resolution, nil
 }

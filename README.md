@@ -294,6 +294,8 @@ docker compose down
 - [ADR-023: Native Server-TLS- und Transportidentität](docs/adr/ADR-023-native-server-tls-und-transportidentitaet.md)
 - [ADR-024: Sessionrotation und Sicherheitsgeneration](docs/adr/ADR-024-sessionrotation-und-sicherheitsgeneration.md)
 - [ADR-025: Globale Service- und Provider-Registry](docs/adr/ADR-025-globale-service-und-provider-registry.md)
+- [ADR-026: Direkte Dokument-Sichtbarkeitsbindungen](docs/adr/ADR-026-direkte-dokument-sichtbarkeitsbindungen.md)
+- [ADR-027: Typisierte Certificate-, Key- und Secret-Provider](docs/adr/ADR-027-typisierte-certificate-key-und-secret-provider.md)
 - [Betriebsprofil](docs/BETRIEBSPROFIL.md)
 - [KI-Datenklassifikation](docs/KI_DATENKLASSIFIKATION.md)
 - [API-Grundvertrag](docs/API_GRUNDVERTRAG.md)

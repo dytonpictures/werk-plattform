@@ -26,6 +26,10 @@ func TestOpenAPIContractDocumentsOperationalRoutesAndBoundaries(t *testing.T) {
 	if contract["openapi"] != "3.1.0" {
 		t.Fatalf("OpenAPI version = %v, want 3.1.0", contract["openapi"])
 	}
+	info, ok := contract["info"].(map[string]any)
+	if !ok || info["version"] != "0.3.0" {
+		t.Fatalf("document-capable API contract version = %v, want 0.3.0", info["version"])
+	}
 
 	paths, ok := contract["paths"].(map[string]any)
 	if !ok {
@@ -77,6 +81,34 @@ func TestOpenAPIContractDocumentsOperationalRoutesAndBoundaries(t *testing.T) {
 		if !ok || operations["get"] == nil {
 			t.Errorf("OpenAPI contract does not document GET %s", path)
 		}
+	}
+	components, ok := contract["components"].(map[string]any)
+	if !ok {
+		t.Fatal("OpenAPI contract has no components object")
+	}
+	schemas, ok := components["schemas"].(map[string]any)
+	if !ok {
+		t.Fatal("OpenAPI contract has no schemas object")
+	}
+	documentSummary, ok := schemas["DocumentSummary"].(map[string]any)
+	if !ok {
+		t.Fatal("OpenAPI contract has no DocumentSummary schema")
+	}
+	properties, ok := documentSummary["properties"].(map[string]any)
+	if !ok || properties["access_reason"] == nil {
+		t.Fatal("DocumentSummary does not expose the semantic access_reason")
+	}
+	documentPage, ok := schemas["DocumentPage"].(map[string]any)
+	if !ok {
+		t.Fatal("OpenAPI contract has no DocumentPage schema")
+	}
+	pageProperties, ok := documentPage["properties"].(map[string]any)
+	if !ok {
+		t.Fatal("DocumentPage has no properties")
+	}
+	visibilityScope, ok := pageProperties["visibility_scope"].(map[string]any)
+	if !ok || visibilityScope["const"] != "created-or-directly-shared-with-me" {
+		t.Fatal("DocumentPage visibility_scope does not bind direct visibility semantics")
 	}
 	for _, path := range []string{"/admin/v1/tenants", "/admin/v1/tenants/{tenantId}/organizational-units"} {
 		operations, ok := paths[path].(map[string]any)

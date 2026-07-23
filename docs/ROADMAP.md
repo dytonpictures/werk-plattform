@@ -195,6 +195,16 @@ an keinen bestehenden Identity-, Storage-, Kafka- oder Certificate-Adapter
 gekoppelt. Vor einer solchen Kopplung wird genau ein Domänenverbraucher mit
 Audit-, Outbox-, RLS- und Betriebsvertrag integriert; Änderungen vorbehalten.
 
+**Secure-Material-Vertrag 2026-07-22:** Certificate-, Signaturschlüssel- und
+Secretzugriff besitzen getrennte typisierte Go-Ports auf der Registry-Grammatik.
+Anfragen führen Provider-/Binding-Revision als Diagnosekoordinaten mit und sind
+an exakte Materialversion, Zweck und Operationsgrenze gebunden. Vor
+sicherheitsrelevanter Nutzung wird der vollständige Registry-Vertrag erneut
+aufgelöst; private Schlüssel werden nicht exportiert und eine allgemeine
+`secret.read`-Fähigkeit ist ausgeschlossen. Datenbank-Seeds,
+Runtime-Reader und Adapter bleiben bis zum ersten eng begrenzten nativen
+TLS-Verbraucher bewusst offen; Änderungen vorbehalten.
+
 - Ressourcenregistrierung und `BusinessObjectView` für Navigation, Suche und
   autorisierte Kontextansichten implementieren.
 - `BusinessRelation` mit registrierten Relationstypen, Owner, Gültigkeitszeit und

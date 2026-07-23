@@ -118,6 +118,7 @@ func documentListQueryFromRequest(request *http.Request) (documentstore.ListQuer
 		Search:         values.Get("q"),
 		Status:         values.Get("status"),
 		Classification: values.Get("classification"),
+		AccessReason:   values.Get("access"),
 	}
 	if rawLimit := strings.TrimSpace(values.Get("limit")); rawLimit != "" {
 		limit, err := strconv.Atoi(rawLimit)

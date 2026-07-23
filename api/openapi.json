@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "WERK Operations API",
-    "version": "0.2.0",
+    "version": "0.3.0",
     "description": "Fachneutrale Betriebsendpunkte des WERK-Plattformkerns. Core Identity ist die interne Identitäts- und Zugriffsschicht; externe Identity Provider werden ausschließlich über optionale Adapter angebunden. Work-, Admin- und Service-Verträge bleiben getrennt."
   },
   "x-werk-api-boundaries": {
@@ -231,13 +231,14 @@
     "/api/v1/documents": {
       "get": {
         "operationId": "listWorkDocuments",
-        "summary": "Listet die fuer das Arbeitskonto sichtbaren eigenen Dokumente",
-        "description": "Der erste dokumentlokale Leseschnitt ist absichtlich auf vom authentifizierten Work-Konto erzeugte Dokumente begrenzt. Das Collection-Listenrecht autorisiert nur diese persoenliche Metadatenprojektion; Tenant, Datenprofil und Processing-Policy werden serverseitig geprueft. Die Detailansicht erfordert zusaetzlich das konkrete Dokument-Leserecht. Storage- und Byte-Metadaten sind nicht Bestandteil der Antwort.",
+        "summary": "Listet eigene und direkt mit dem Arbeitskonto geteilte Dokumente",
+        "description": "Das Collection-Listenrecht autorisiert die persoenliche Metadatenprojektion. Core Documents begrenzt sie dokumentlokal auf selbst erzeugte oder ueber eine aktive direkte Kontobindung sichtbare Dokumente. Tenant, Datenprofil und Processing-Policy werden serverseitig geprueft. Die Detailansicht erfordert zusaetzlich das konkrete Dokument-Leserecht. Eine Bindung gewaehrt keine Update-, Versions-, Download- oder Storage-Berechtigung.",
         "security": [{ "sessionCookie": [] }],
         "parameters": [
           { "name": "q", "in": "query", "required": false, "schema": { "type": "string", "maxLength": 120 } },
           { "name": "status", "in": "query", "required": false, "schema": { "type": "string", "enum": ["active", "archived"] } },
           { "name": "classification", "in": "query", "required": false, "schema": { "type": "string", "enum": ["internal", "confidential", "restricted"] } },
+          { "name": "access", "in": "query", "required": false, "schema": { "type": "string", "enum": ["created-by-me", "shared-directly-with-me"] } },
           { "name": "limit", "in": "query", "required": false, "schema": { "type": "integer", "minimum": 1, "maximum": 100, "default": 25 } },
           { "name": "cursor", "in": "query", "required": false, "description": "Opaker Cursor aus next_cursor der vorherigen Seite.", "schema": { "type": "string", "minLength": 1, "maxLength": 512 } }
         ],
@@ -255,7 +256,7 @@
       "get": {
         "operationId": "getWorkDocument",
         "summary": "Laedt Dokumentmetadaten und die unveraenderliche Versionshistorie",
-        "description": "Nicht vorhandene, nicht berechtigte und nicht nach der ersten dokumentlokalen Regel sichtbare IDs liefern einheitlich 404. Blob-, Provider-, Hash- und Transferdaten werden nicht ausgegeben.",
+        "description": "Nicht vorhandene, nicht berechtigte, nicht selbst erzeugte und nicht aktiv direkt gebundene IDs liefern einheitlich 404. Ein Widerruf wirkt bei der naechsten Lesetransaktion. Blob-, Provider-, Hash- und Transferdaten werden nicht ausgegeben.",
         "security": [{ "sessionCookie": [] }],
         "responses": {
           "200": { "description": "Autorisierte Dokumentansicht", "headers": { "ETag": { "$ref": "#/components/headers/EntityVersion" }, "Cache-Control": { "description": "Verhindert die Zwischenspeicherung geschuetzter Dokumentmetadaten.", "schema": { "type": "string", "const": "no-store" } } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/DocumentDetail" } } } },
@@ -768,7 +769,7 @@
       },
       "DocumentSummary": {
         "type": "object", "additionalProperties": false,
-        "required": ["id", "title", "status", "source_module", "created_at", "updated_at", "version", "latest_version", "classification"],
+        "required": ["id", "title", "status", "source_module", "created_at", "updated_at", "version", "access_reason", "latest_version", "classification"],
         "properties": {
           "id": { "type": "string", "format": "uuid" },
           "title": { "type": "string", "minLength": 1, "maxLength": 240 },
@@ -777,6 +778,7 @@
           "created_at": { "type": "string", "format": "date-time" },
           "updated_at": { "type": "string", "format": "date-time" },
           "version": { "type": "integer", "minimum": 1 },
+          "access_reason": { "type": "string", "enum": ["created-by-me", "shared-directly-with-me"] },
           "latest_version": { "$ref": "#/components/schemas/DocumentVersion" },
           "classification": { "$ref": "#/components/schemas/DocumentClassification" }
         }
@@ -785,7 +787,7 @@
         "type": "object", "additionalProperties": false,
         "required": ["visibility_scope", "items"],
         "properties": {
-          "visibility_scope": { "type": "string", "const": "created-by-me" },
+          "visibility_scope": { "type": "string", "const": "created-or-directly-shared-with-me" },
           "items": { "type": "array", "maxItems": 100, "items": { "$ref": "#/components/schemas/DocumentSummary" } },
           "next_cursor": { "type": "string", "minLength": 1, "maxLength": 512 }
         }

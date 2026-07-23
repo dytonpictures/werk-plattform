@@ -39,34 +39,40 @@ func TestDocumentReadSliceTenantAndCreatorIsolationIntegration(t *testing.T) {
 	}
 
 	const (
-		tenantA       = "0196f000-0000-7000-8000-000000000c01"
-		tenantB       = "0196f000-0000-7000-8000-000000000c02"
-		partyA        = "0196f000-0000-7000-8000-000000000c03"
-		partyOther    = "0196f000-0000-7000-8000-000000000c04"
-		partyB        = "0196f000-0000-7000-8000-000000000c05"
-		accountA      = "0196f000-0000-7000-8000-000000000c06"
-		accountOther  = "0196f000-0000-7000-8000-000000000c07"
-		accountB      = "0196f000-0000-7000-8000-000000000c08"
-		blobA1        = "0196f000-0000-7000-8000-000000000c09"
-		blobA2        = "0196f000-0000-7000-8000-000000000c0a"
-		blobOther     = "0196f000-0000-7000-8000-000000000c0b"
-		blobB         = "0196f000-0000-7000-8000-000000000c0c"
-		locationA1    = "0196f000-0000-7000-8000-000000000c0d"
-		locationA2    = "0196f000-0000-7000-8000-000000000c0e"
-		locationOther = "0196f000-0000-7000-8000-000000000c0f"
-		locationB     = "0196f000-0000-7000-8000-000000000c10"
-		documentA1    = "0196f000-0000-7000-8000-000000000c11"
-		documentA2    = "0196f000-0000-7000-8000-000000000c12"
-		documentOther = "0196f000-0000-7000-8000-000000000c13"
-		documentB     = "0196f000-0000-7000-8000-000000000c14"
-		versionA1     = "0196f000-0000-7000-8000-000000000c15"
-		versionA2     = "0196f000-0000-7000-8000-000000000c16"
-		versionOther  = "0196f000-0000-7000-8000-000000000c17"
-		versionB      = "0196f000-0000-7000-8000-000000000c18"
-		classA1       = "0196f000-0000-7000-8000-000000000c19"
-		classA2       = "0196f000-0000-7000-8000-000000000c1a"
-		classOther    = "0196f000-0000-7000-8000-000000000c1b"
-		classB        = "0196f000-0000-7000-8000-000000000c1c"
+		tenantA        = "0196f000-0000-7000-8000-000000000c01"
+		tenantB        = "0196f000-0000-7000-8000-000000000c02"
+		partyA         = "0196f000-0000-7000-8000-000000000c03"
+		partyOther     = "0196f000-0000-7000-8000-000000000c04"
+		partyB         = "0196f000-0000-7000-8000-000000000c05"
+		accountA       = "0196f000-0000-7000-8000-000000000c06"
+		accountOther   = "0196f000-0000-7000-8000-000000000c07"
+		accountB       = "0196f000-0000-7000-8000-000000000c08"
+		blobA1         = "0196f000-0000-7000-8000-000000000c09"
+		blobA2         = "0196f000-0000-7000-8000-000000000c0a"
+		blobOther      = "0196f000-0000-7000-8000-000000000c0b"
+		blobB          = "0196f000-0000-7000-8000-000000000c0c"
+		locationA1     = "0196f000-0000-7000-8000-000000000c0d"
+		locationA2     = "0196f000-0000-7000-8000-000000000c0e"
+		locationOther  = "0196f000-0000-7000-8000-000000000c0f"
+		locationB      = "0196f000-0000-7000-8000-000000000c10"
+		documentA1     = "0196f000-0000-7000-8000-000000000c11"
+		documentA2     = "0196f000-0000-7000-8000-000000000c12"
+		documentOther  = "0196f000-0000-7000-8000-000000000c13"
+		documentB      = "0196f000-0000-7000-8000-000000000c14"
+		versionA1      = "0196f000-0000-7000-8000-000000000c15"
+		versionA2      = "0196f000-0000-7000-8000-000000000c16"
+		versionOther   = "0196f000-0000-7000-8000-000000000c17"
+		versionB       = "0196f000-0000-7000-8000-000000000c18"
+		classA1        = "0196f000-0000-7000-8000-000000000c19"
+		classA2        = "0196f000-0000-7000-8000-000000000c1a"
+		classOther     = "0196f000-0000-7000-8000-000000000c1b"
+		classB         = "0196f000-0000-7000-8000-000000000c1c"
+		documentHidden = "0196f000-0000-7000-8000-000000000c1d"
+		versionHidden  = "0196f000-0000-7000-8000-000000000c1e"
+		classHidden    = "0196f000-0000-7000-8000-000000000c1f"
+		bindingShared  = "0196f000-0000-7000-8000-000000000c20"
+		bindingRevoked = "0196f000-0000-7000-8000-000000000c21"
+		bindingForeign = "0196f000-0000-7000-8000-000000000c22"
 	)
 	createdAt := time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC)
 	if _, err := owner.Exec(ctx, `
@@ -166,6 +172,21 @@ func TestDocumentReadSliceTenantAndCreatorIsolationIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := tx.Exec(ctx, `
+		INSERT INTO werk_core.documents (id,tenant_id,title,status,source_module,created_by_account_id,created_at,updated_at)
+		VALUES ($1::uuid,$2::uuid,'Nicht mehr geteilt','active','core.documents',$3::uuid,$4,$4)
+	`, documentHidden, tenantA, accountOther, createdAt.Add(2*time.Second)); err != nil {
+		_ = tx.Rollback(ctx)
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO werk_core.document_versions
+		(id,tenant_id,document_id,version_number,blob_id,source,created_by_account_id,published_at)
+		VALUES ($1::uuid,$2::uuid,$3::uuid,1,$4::uuid,'upload',$5::uuid,$6)
+	`, versionHidden, tenantA, documentHidden, blobOther, accountOther, createdAt.Add(2*time.Second)); err != nil {
+		_ = tx.Rollback(ctx)
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(ctx, `
 		INSERT INTO werk_core.document_classification_revisions
 		(id,tenant_id,document_id,revision,classification,retention_class,legal_hold,recorded_by_account_id,recorded_at)
 		VALUES ($1::uuid,$2::uuid,$3::uuid,1,'confidential','business.standard',false,$4::uuid,$13),
@@ -178,8 +199,41 @@ func TestDocumentReadSliceTenantAndCreatorIsolationIntegration(t *testing.T) {
 		_ = tx.Rollback(ctx)
 		t.Fatal(err)
 	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO werk_core.document_classification_revisions
+		(id,tenant_id,document_id,revision,classification,retention_class,legal_hold,recorded_by_account_id,recorded_at)
+		VALUES ($1::uuid,$2::uuid,$3::uuid,1,'internal','business.standard',false,$4::uuid,$5)
+	`, classHidden, tenantA, documentHidden, accountOther, createdAt.Add(2*time.Second)); err != nil {
+		_ = tx.Rollback(ctx)
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO werk_core.document_account_visibility_bindings
+		(id,tenant_id,document_id,grantee_account_id,granted_by_account_id,granted_at)
+		VALUES ($1::uuid,$2::uuid,$3::uuid,$4::uuid,$5::uuid,$6),
+		       ($7::uuid,$2::uuid,$8::uuid,$4::uuid,$5::uuid,$6)
+	`, bindingShared, tenantA, documentOther, accountA, accountOther, createdAt.Add(7*time.Second),
+		bindingRevoked, documentHidden); err != nil {
+		_ = tx.Rollback(ctx)
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE werk_core.document_account_visibility_bindings
+		SET revoked_by_account_id=$2::uuid, revoked_at=$3, version=2
+		WHERE id=$1::uuid
+	`, bindingRevoked, accountOther, createdAt.Add(8*time.Second)); err != nil {
+		_ = tx.Rollback(ctx)
+		t.Fatal(err)
+	}
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatal(err)
+	}
+	if _, err := owner.Exec(ctx, `
+		INSERT INTO werk_core.document_account_visibility_bindings
+		(id,tenant_id,document_id,grantee_account_id,granted_by_account_id,granted_at)
+		VALUES ($1::uuid,$2::uuid,$3::uuid,$4::uuid,$5::uuid,$6)
+	`, bindingForeign, tenantA, documentOther, accountB, accountOther, createdAt.Add(7*time.Second)); err == nil {
+		t.Fatal("cross-tenant document visibility binding was accepted")
 	}
 
 	workDatabase, err := database.NewWork(ctx, workURL, "werk-document-read-integration")
@@ -198,7 +252,9 @@ func TestDocumentReadSliceTenantAndCreatorIsolationIntegration(t *testing.T) {
 		Assurance: identity.AssuranceSingleFactor, TenantID: &parsedTenantA,
 	}
 	page, err := service.List(ctx, actorA, ListQuery{})
-	if err != nil || len(page.Items) != 2 || page.Items[0].ID != documentA1 || page.Items[1].ID != documentA2 {
+	if err != nil || len(page.Items) != 3 || page.Items[0].ID != documentA1 || page.Items[1].ID != documentA2 ||
+		page.Items[2].ID != documentOther || page.Items[0].AccessReason != "created-by-me" ||
+		page.Items[2].AccessReason != "shared-directly-with-me" {
 		t.Fatalf("actor A page = %#v, err = %v", page, err)
 	}
 	firstPage, err := service.List(ctx, actorA, ListQuery{Limit: 1})
@@ -213,12 +269,24 @@ func TestDocumentReadSliceTenantAndCreatorIsolationIntegration(t *testing.T) {
 	if err != nil || len(filtered.Items) != 1 || filtered.Items[0].ID != documentA2 {
 		t.Fatalf("filtered page = %#v, err = %v", filtered, err)
 	}
+	shared, err := service.List(ctx, actorA, ListQuery{AccessReason: "shared-directly-with-me"})
+	if err != nil || len(shared.Items) != 1 || shared.Items[0].ID != documentOther {
+		t.Fatalf("shared page = %#v, err = %v", shared, err)
+	}
+	created, err := service.List(ctx, actorA, ListQuery{AccessReason: "created-by-me"})
+	if err != nil || len(created.Items) != 2 || created.Items[0].ID != documentA1 || created.Items[1].ID != documentA2 {
+		t.Fatalf("created page = %#v, err = %v", created, err)
+	}
 	detail, err := service.Detail(ctx, actorA, documentA1)
 	if err != nil || detail.ID != documentA1 || len(detail.Versions) != 1 || detail.Classification.Level != "confidential" {
 		t.Fatalf("document detail = %#v, err = %v", detail, err)
 	}
-	if _, err := service.Detail(ctx, actorA, documentOther); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("same-tenant foreign creator error = %v, want not found", err)
+	sharedDetail, err := service.Detail(ctx, actorA, documentOther)
+	if err != nil || sharedDetail.ID != documentOther || sharedDetail.AccessReason != "shared-directly-with-me" {
+		t.Fatalf("shared detail = %#v, err = %v", sharedDetail, err)
+	}
+	if _, err := service.Detail(ctx, actorA, documentHidden); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("revoked direct visibility error = %v, want not found", err)
 	}
 	if _, err := service.Detail(ctx, actorA, documentB); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("foreign tenant error = %v, want not found", err)

@@ -717,6 +717,13 @@ ProviderRegistration
 ProviderCapabilityBinding
   provider_id, service_key, service_contract_version,
   capability_key, capability_version, lifecycle, revision
+
+SecureMaterialRef
+  opaque_handle, exact_material_version
+
+SecureMaterialOperation
+  provider_resolution, boundary, tenant_id?, purpose_key,
+  request_id, correlation_id
 ```
 
 Der Core verwaltet Registrierung, tenantbezogene Aktivierung und explizite
@@ -753,6 +760,19 @@ Mehrinstanz-Schreibhoheit. Identity-Bindings und Storage-Locations bleiben bei
 ihren jeweiligen Core-Domänen. Den verbindlichen Vertrag beschreibt
 [`ADR-025`](adr/ADR-025-globale-service-und-provider-registry.md); Änderungen
 vorbehalten.
+
+Certificate-, Signaturschlüssel- und Secretzugriff verwenden getrennte,
+typisierte Ports. Eine Operation bindet die validierte Registry-Auflösung an
+einen providerlokalen opaken Handle, eine exakte Materialversion, Zweck,
+Operationsgrenze und serverseitige Request-/Correlation-IDs. Private
+Schlüsselbytes werden nicht exportiert; Secrets sind nur als begrenzte Bytes
+innerhalb eines Callbacks sichtbar. Die globale Registry enthält weder Handle
+noch Material. Ihr Snapshot ist keine Berechtigung. Vor sicherheitsrelevanter
+Nutzung muss der vollständige Service-/Capability-/Provider-/Binding-Vertrag
+erneut aufgelöst werden; Provider- und Binding-Revisionen allein reichen dafür
+nicht. Den Vertrag beschreibt
+[`ADR-027`](adr/ADR-027-typisierte-certificate-key-und-secret-provider.md);
+Änderungen vorbehalten.
 
 ### 3.7 Geschäftsobjekte, Beziehungen und Entscheidungen
 

@@ -98,6 +98,18 @@ func TestDocumentStorageFoundationIntegration(t *testing.T) {
 		accountB, tenantB.ID.String(), databaseUUID([16]byte(partyB.ID)), "document-"+accountB+"@example.invalid"); err != nil {
 		t.Fatalf("insert document actor accounts: %v", err)
 	}
+	visibilityGranteeA := insertDocumentWorkAccountFixture(t, ctx, owner, tenantA.ID, "active")
+	visibilityOtherActorA := insertDocumentWorkAccountFixture(t, ctx, owner, tenantA.ID, "active")
+	visibilityDisabledGranteeA := insertDocumentWorkAccountFixture(t, ctx, owner, tenantA.ID, "disabled")
+	visibilityGranteeB := insertDocumentWorkAccountFixture(t, ctx, owner, tenantB.ID, "active")
+	visibilityServiceA := freshDatabaseUUID(t)
+	if _, err := owner.Exec(ctx, `
+		INSERT INTO werk_core.accounts (
+			id, account_class, tenant_id, login_name, status
+		) VALUES ($1::uuid, 'service', $2::uuid, $3, 'active')
+	`, visibilityServiceA, tenantA.ID.String(), "document-service-"+visibilityServiceA+"@example.invalid"); err != nil {
+		t.Fatalf("insert non-work visibility target: %v", err)
+	}
 
 	if _, err := owner.Exec(ctx, `
 		INSERT INTO werk_core.storage_blobs (
@@ -343,6 +355,45 @@ func TestDocumentStorageFoundationIntegration(t *testing.T) {
 	if err := repairTransaction.Commit(ctx); err != nil {
 		t.Fatalf("commit repaired blob: %v", err)
 	}
+
+	serviceDatabase, err := NewRuntime(ctx, serviceURL, RuntimeOptions{
+		ExpectedRole:    ServiceRuntimeRole,
+		ApplicationName: "werk-integration-document-service",
+		MaxConnections:  1,
+	})
+	if err != nil {
+		t.Fatalf("open service runtime: %v", err)
+	}
+	defer serviceDatabase.Close()
+	assertDocumentVisibilityBindingServiceRuntime(t, ctx, serviceDatabase, documentVisibilityBindingFixture{
+		tenantA:          tenantA.ID,
+		tenantB:          tenantB.ID,
+		documentA:        documentA,
+		documentB:        documentB,
+		creatorA:         accountA,
+		creatorB:         accountB,
+		granteeA:         visibilityGranteeA,
+		granteeB:         visibilityGranteeB,
+		otherActorA:      visibilityOtherActorA,
+		disabledGranteeA: visibilityDisabledGranteeA,
+		nonWorkGranteeA:  visibilityServiceA,
+		grantedAt:        createdAt.Add(12 * time.Second),
+	})
+	if _, err := owner.Exec(ctx, `
+		UPDATE werk_core.accounts SET status = 'disabled' WHERE id = $1::uuid
+	`, accountA); err != nil {
+		t.Fatalf("disable document creator for visibility test: %v", err)
+	}
+	assertDocumentVisibilityGrantRejected(
+		t, ctx, serviceDatabase, tenantA.ID, documentA, visibilityOtherActorA, accountA,
+		createdAt.Add(13*time.Second), "inactive document creator",
+	)
+	if _, err := owner.Exec(ctx, `
+		UPDATE werk_core.accounts SET status = 'active' WHERE id = $1::uuid
+	`, accountA); err != nil {
+		t.Fatalf("reactivate document creator after visibility test: %v", err)
+	}
+
 	if _, err := owner.Exec(ctx, `
 		UPDATE werk_core.documents
 		SET status = 'archived', version = 2, updated_at = $2
@@ -350,6 +401,10 @@ func TestDocumentStorageFoundationIntegration(t *testing.T) {
 	`, documentA, createdAt.Add(12*time.Second)); err != nil {
 		t.Fatalf("archive document: %v", err)
 	}
+	assertDocumentVisibilityGrantRejected(
+		t, ctx, serviceDatabase, tenantA.ID, documentA, visibilityOtherActorA, accountA,
+		createdAt.Add(13*time.Second), "archived document",
+	)
 	if _, err := owner.Exec(ctx, `
 		INSERT INTO werk_core.document_versions (
 			id, tenant_id, document_id, version_number, blob_id, source,
@@ -389,15 +444,6 @@ func TestDocumentStorageFoundationIntegration(t *testing.T) {
 		t.Fatal("work runtime bypassed the future document service")
 	}
 
-	serviceDatabase, err := NewRuntime(ctx, serviceURL, RuntimeOptions{
-		ExpectedRole:    ServiceRuntimeRole,
-		ApplicationName: "werk-integration-document-service",
-		MaxConnections:  1,
-	})
-	if err != nil {
-		t.Fatalf("open service runtime: %v", err)
-	}
-	defer serviceDatabase.Close()
 	var serviceRowsWithoutTenant int
 	if err := serviceDatabase.pool.QueryRow(ctx, `SELECT count(*) FROM werk_core.documents`).Scan(&serviceRowsWithoutTenant); err != nil {
 		t.Fatalf("query service documents without tenant: %v", err)
@@ -455,6 +501,266 @@ func TestDocumentStorageFoundationIntegration(t *testing.T) {
 		return tx.QueryRow(ctx, `SELECT count(*) FROM werk_core.documents`).Scan(&count)
 	}); err == nil {
 		t.Fatal("storage worker can read document metadata")
+	}
+}
+
+type documentVisibilityBindingFixture struct {
+	tenantA          tenancy.TenantID
+	tenantB          tenancy.TenantID
+	documentA        string
+	documentB        string
+	creatorA         string
+	creatorB         string
+	granteeA         string
+	granteeB         string
+	otherActorA      string
+	disabledGranteeA string
+	nonWorkGranteeA  string
+	grantedAt        time.Time
+}
+
+func insertDocumentWorkAccountFixture(
+	t *testing.T,
+	ctx context.Context,
+	owner *pgxpool.Conn,
+	tenantID tenancy.TenantID,
+	status string,
+) string {
+	t.Helper()
+	partyID := freshDatabaseUUID(t)
+	accountID := freshDatabaseUUID(t)
+	displayName := "Visibility " + accountID[:8]
+	if _, err := owner.Exec(ctx, `
+		INSERT INTO werk_core.parties (id, tenant_id, party_type, display_name, status)
+		VALUES ($1::uuid, $2::uuid, 'person', $3, 'active')
+	`, partyID, tenantID.String(), displayName); err != nil {
+		t.Fatalf("insert document visibility party: %v", err)
+	}
+	if _, err := owner.Exec(ctx, `
+		INSERT INTO werk_core.persons (party_id, tenant_id, given_name, family_name)
+		VALUES ($1::uuid, $2::uuid, 'Visibility', $3)
+	`, partyID, tenantID.String(), accountID[:8]); err != nil {
+		t.Fatalf("insert document visibility person: %v", err)
+	}
+	if _, err := owner.Exec(ctx, `
+		INSERT INTO werk_core.accounts (
+			id, account_class, tenant_id, person_party_id, login_name, status
+		) VALUES ($1::uuid, 'work', $2::uuid, $3::uuid, $4, $5)
+	`, accountID, tenantID.String(), partyID, "document-visibility-"+accountID+"@example.invalid", status); err != nil {
+		t.Fatalf("insert document visibility account: %v", err)
+	}
+	return accountID
+}
+
+func assertDocumentVisibilityGrantRejected(
+	t *testing.T,
+	ctx context.Context,
+	database *RuntimeDB,
+	tenantID tenancy.TenantID,
+	documentID, granteeID, creatorID string,
+	grantedAt time.Time,
+	reason string,
+) {
+	t.Helper()
+	err := database.WithinTenantWrite(ctx, tenantID, func(ctx context.Context, tx TenantTx) error {
+		_, err := tx.Exec(ctx, `
+			INSERT INTO werk_core.document_account_visibility_bindings (
+				id, tenant_id, document_id, grantee_account_id,
+				granted_by_account_id, granted_at
+			) VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5::uuid, $6)
+		`, freshDatabaseUUID(t), tenantID.String(), documentID, granteeID, creatorID, grantedAt)
+		return err
+	})
+	if err == nil {
+		t.Fatalf("service runtime granted direct visibility despite %s", reason)
+	}
+}
+
+func assertDocumentVisibilityBindingServiceRuntime(
+	t *testing.T,
+	ctx context.Context,
+	database *RuntimeDB,
+	fixture documentVisibilityBindingFixture,
+) {
+	t.Helper()
+
+	assertWriteRejected := func(name string, tenantID tenancy.TenantID, statement string, arguments ...any) {
+		t.Helper()
+		t.Run(name, func(t *testing.T) {
+			err := database.WithinTenantWrite(ctx, tenantID, func(ctx context.Context, tx TenantTx) error {
+				_, err := tx.Exec(ctx, statement, arguments...)
+				return err
+			})
+			if err == nil {
+				t.Fatal("service runtime write unexpectedly succeeded")
+			}
+		})
+	}
+
+	var rowsWithoutTenant int
+	if err := database.pool.QueryRow(ctx, `
+		SELECT count(*) FROM werk_core.document_account_visibility_bindings
+	`).Scan(&rowsWithoutTenant); err != nil {
+		t.Fatalf("query document visibility bindings without tenant: %v", err)
+	}
+	if rowsWithoutTenant != 0 {
+		t.Fatalf("document visibility bindings without tenant = %d, want 0", rowsWithoutTenant)
+	}
+
+	assertWriteRejected("tenant boundary", fixture.tenantA, `
+		INSERT INTO werk_core.document_account_visibility_bindings (
+			id, tenant_id, document_id, grantee_account_id,
+			granted_by_account_id, granted_at
+		) VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5::uuid, $6)
+	`, freshDatabaseUUID(t), fixture.tenantB.String(), fixture.documentB, fixture.granteeB, fixture.creatorB, fixture.grantedAt)
+	assertWriteRejected("non-creator grantor", fixture.tenantA, `
+		INSERT INTO werk_core.document_account_visibility_bindings (
+			id, tenant_id, document_id, grantee_account_id,
+			granted_by_account_id, granted_at
+		) VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5::uuid, $6)
+	`, freshDatabaseUUID(t), fixture.tenantA.String(), fixture.documentA, fixture.granteeA, fixture.otherActorA, fixture.grantedAt)
+	assertWriteRejected("disabled work grantee", fixture.tenantA, `
+		INSERT INTO werk_core.document_account_visibility_bindings (
+			id, tenant_id, document_id, grantee_account_id,
+			granted_by_account_id, granted_at
+		) VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5::uuid, $6)
+	`, freshDatabaseUUID(t), fixture.tenantA.String(), fixture.documentA, fixture.disabledGranteeA, fixture.creatorA, fixture.grantedAt)
+	assertWriteRejected("non-work grantee", fixture.tenantA, `
+		INSERT INTO werk_core.document_account_visibility_bindings (
+			id, tenant_id, document_id, grantee_account_id,
+			granted_by_account_id, granted_at
+		) VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5::uuid, $6)
+	`, freshDatabaseUUID(t), fixture.tenantA.String(), fixture.documentA, fixture.nonWorkGranteeA, fixture.creatorA, fixture.grantedAt)
+	assertWriteRejected("self binding", fixture.tenantA, `
+		INSERT INTO werk_core.document_account_visibility_bindings (
+			id, tenant_id, document_id, grantee_account_id,
+			granted_by_account_id, granted_at
+		) VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5::uuid, $6)
+	`, freshDatabaseUUID(t), fixture.tenantA.String(), fixture.documentA, fixture.creatorA, fixture.creatorA, fixture.grantedAt)
+
+	bindingID := freshDatabaseUUID(t)
+	if err := database.WithinTenantWrite(ctx, fixture.tenantA, func(ctx context.Context, tx TenantTx) error {
+		_, err := tx.Exec(ctx, `
+			INSERT INTO werk_core.document_account_visibility_bindings (
+				id, tenant_id, document_id, grantee_account_id,
+				granted_by_account_id, granted_at
+			) VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5::uuid, $6)
+		`, bindingID, fixture.tenantA.String(), fixture.documentA, fixture.granteeA, fixture.creatorA, fixture.grantedAt)
+		return err
+	}); err != nil {
+		t.Fatalf("grant direct document visibility through service runtime: %v", err)
+	}
+
+	if err := database.WithinTenantRead(ctx, fixture.tenantA, func(ctx context.Context, tx TenantTx) error {
+		var documentID, granteeID, grantorID string
+		var version int64
+		var revokedAt *time.Time
+		if err := tx.QueryRow(ctx, `
+			SELECT document_id::text, grantee_account_id::text,
+			       granted_by_account_id::text, version, revoked_at
+			FROM werk_core.document_account_visibility_bindings
+			WHERE id = $1::uuid
+		`, bindingID).Scan(&documentID, &granteeID, &grantorID, &version, &revokedAt); err != nil {
+			return err
+		}
+		if documentID != fixture.documentA || granteeID != fixture.granteeA || grantorID != fixture.creatorA || version != 1 || revokedAt != nil {
+			return fmt.Errorf("unexpected active document visibility binding: document=%s grantee=%s grantor=%s version=%d revoked=%v",
+				documentID, granteeID, grantorID, version, revokedAt)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("read active document visibility binding: %v", err)
+	}
+	if err := database.WithinTenantRead(ctx, fixture.tenantB, func(ctx context.Context, tx TenantTx) error {
+		var count int
+		if err := tx.QueryRow(ctx, `
+			SELECT count(*) FROM werk_core.document_account_visibility_bindings
+		`).Scan(&count); err != nil {
+			return err
+		}
+		if count != 0 {
+			return fmt.Errorf("tenant B visible binding count = %d, want 0", count)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("document visibility binding tenant read boundary: %v", err)
+	}
+
+	assertWriteRejected("grantee identity mutation", fixture.tenantA, `
+		UPDATE werk_core.document_account_visibility_bindings
+		SET grantee_account_id = $2::uuid
+		WHERE id = $1::uuid
+	`, bindingID, fixture.otherActorA)
+	assertWriteRejected("grantor identity mutation", fixture.tenantA, `
+		UPDATE werk_core.document_account_visibility_bindings
+		SET granted_by_account_id = $2::uuid
+		WHERE id = $1::uuid
+	`, bindingID, fixture.otherActorA)
+	assertWriteRejected("grant timestamp mutation", fixture.tenantA, `
+		UPDATE werk_core.document_account_visibility_bindings
+		SET granted_at = $2
+		WHERE id = $1::uuid
+	`, bindingID, fixture.grantedAt.Add(time.Second))
+	assertWriteRejected("binding identifier mutation", fixture.tenantA, `
+		UPDATE werk_core.document_account_visibility_bindings
+		SET id = $2::uuid
+		WHERE id = $1::uuid
+	`, bindingID, freshDatabaseUUID(t))
+
+	revokedAt := fixture.grantedAt.Add(2 * time.Second)
+	assertWriteRejected("skipped revoke version", fixture.tenantA, `
+		UPDATE werk_core.document_account_visibility_bindings
+		SET revoked_by_account_id = $2::uuid, revoked_at = $3, version = 3
+		WHERE id = $1::uuid
+	`, bindingID, fixture.creatorA, revokedAt)
+	if err := database.WithinTenantWrite(ctx, fixture.tenantA, func(ctx context.Context, tx TenantTx) error {
+		_, err := tx.Exec(ctx, `
+			UPDATE werk_core.document_account_visibility_bindings
+			SET revoked_by_account_id = $2::uuid, revoked_at = $3, version = 2
+			WHERE id = $1::uuid
+		`, bindingID, fixture.creatorA, revokedAt)
+		return err
+	}); err != nil {
+		t.Fatalf("revoke direct document visibility through service runtime: %v", err)
+	}
+	assertWriteRejected("second revoke", fixture.tenantA, `
+		UPDATE werk_core.document_account_visibility_bindings
+		SET revoked_by_account_id = $2::uuid, revoked_at = $3, version = 3
+		WHERE id = $1::uuid
+	`, bindingID, fixture.creatorA, revokedAt.Add(time.Second))
+	assertWriteRejected("delete binding", fixture.tenantA, `
+		DELETE FROM werk_core.document_account_visibility_bindings
+		WHERE id = $1::uuid
+	`, bindingID)
+
+	if err := database.WithinTenantRead(ctx, fixture.tenantA, func(ctx context.Context, tx TenantTx) error {
+		var total, active int
+		var revokedBy string
+		var persistedRevokedAt time.Time
+		var version int64
+		if err := tx.QueryRow(ctx, `
+			SELECT count(*), count(*) FILTER (WHERE revoked_at IS NULL)
+			FROM werk_core.document_account_visibility_bindings
+		`).Scan(&total, &active); err != nil {
+			return err
+		}
+		if total != 1 || active != 0 {
+			return fmt.Errorf("visibility binding counts total=%d active=%d, want 1/0", total, active)
+		}
+		if err := tx.QueryRow(ctx, `
+			SELECT revoked_by_account_id::text, revoked_at, version
+			FROM werk_core.document_account_visibility_bindings
+			WHERE id = $1::uuid
+		`, bindingID).Scan(&revokedBy, &persistedRevokedAt, &version); err != nil {
+			return err
+		}
+		if revokedBy != fixture.creatorA || !persistedRevokedAt.Equal(revokedAt) || version != 2 {
+			return fmt.Errorf("unexpected revoked document visibility binding: actor=%s at=%s version=%d",
+				revokedBy, persistedRevokedAt, version)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("verify revoked document visibility binding: %v", err)
 	}
 }
 
@@ -595,7 +901,8 @@ func assertDocumentStorageCatalog(t *testing.T, ctx context.Context, owner *pgxp
 		WHERE namespace.nspname = 'werk_core'
 		  AND relation.relname IN (
 		    'storage_blobs', 'storage_blob_locations', 'documents',
-		    'document_versions', 'document_classification_revisions'
+		    'document_versions', 'document_classification_revisions',
+		    'document_account_visibility_bindings'
 		  )
 		  AND relation.relrowsecurity
 		  AND relation.relforcerowsecurity
@@ -603,8 +910,8 @@ func assertDocumentStorageCatalog(t *testing.T, ctx context.Context, owner *pgxp
 	`).Scan(&secureTables); err != nil {
 		t.Fatalf("inspect document/storage table security: %v", err)
 	}
-	if secureTables != 5 {
-		t.Fatalf("secure document/storage table count = %d, want 5", secureTables)
+	if secureTables != 6 {
+		t.Fatalf("secure document/storage table count = %d, want 6", secureTables)
 	}
 
 	var permissionContracts int
@@ -622,8 +929,8 @@ func assertDocumentStorageCatalog(t *testing.T, ctx context.Context, owner *pgxp
 	`).Scan(&permissionContracts); err != nil {
 		t.Fatalf("inspect document permission contracts: %v", err)
 	}
-	if permissionContracts != 6 {
-		t.Fatalf("complete document permission contracts = %d, want 6", permissionContracts)
+	if permissionContracts != 7 {
+		t.Fatalf("complete document permission contracts = %d, want 7", permissionContracts)
 	}
 
 	var workDocuments, workStorage, workInsert, workerStorage, workerDocuments, runtimeDelete bool
@@ -641,5 +948,21 @@ func assertDocumentStorageCatalog(t *testing.T, ctx context.Context, owner *pgxp
 	if !workDocuments || workStorage || workInsert || !workerStorage || workerDocuments || runtimeDelete {
 		t.Fatalf("unexpected document/storage grants: workDocuments=%t workStorage=%t workInsert=%t workerStorage=%t workerDocuments=%t runtimeDelete=%t",
 			workDocuments, workStorage, workInsert, workerStorage, workerDocuments, runtimeDelete)
+	}
+
+	var workBindings, serviceBindings, adminBindings, workerBindings, bindingDelete bool
+	if err := owner.QueryRow(ctx, `
+		SELECT
+			pg_catalog.has_table_privilege('werk_work_runtime', 'werk_core.document_account_visibility_bindings', 'SELECT'),
+			pg_catalog.has_table_privilege('werk_service_runtime', 'werk_core.document_account_visibility_bindings', 'SELECT,INSERT,UPDATE'),
+			pg_catalog.has_table_privilege('werk_admin_runtime', 'werk_core.document_account_visibility_bindings', 'SELECT'),
+			pg_catalog.has_table_privilege('werk_worker_runtime', 'werk_core.document_account_visibility_bindings', 'SELECT'),
+			pg_catalog.has_table_privilege('werk_service_runtime', 'werk_core.document_account_visibility_bindings', 'DELETE')
+	`).Scan(&workBindings, &serviceBindings, &adminBindings, &workerBindings, &bindingDelete); err != nil {
+		t.Fatalf("inspect document visibility runtime grants: %v", err)
+	}
+	if !workBindings || !serviceBindings || adminBindings || workerBindings || bindingDelete {
+		t.Fatalf("unexpected document visibility grants: work=%t service=%t admin=%t worker=%t delete=%t",
+			workBindings, serviceBindings, adminBindings, workerBindings, bindingDelete)
 	}
 }

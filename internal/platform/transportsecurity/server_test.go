@@ -1,6 +1,7 @@
 package transportsecurity
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -206,6 +207,43 @@ func TestServerTLSReloadsOnlyCompleteValidMaterial(t *testing.T) {
 	}
 }
 
+func TestServerTLSBoundsInvalidRotationRetries(t *testing.T) {
+	currentTime := time.Now().UTC()
+	files := newTestPKI(t, currentTime)
+	configuration, err := newServerTLSConfig(ServerOptions{
+		Mode: ServerTLS, CertificateFile: files.serverCertificate, PrivateKeyFile: files.serverKey,
+	}, func() time.Time { return currentTime }, time.Minute)
+	if err != nil {
+		t.Fatalf("create server TLS configuration: %v", err)
+	}
+
+	currentTime = currentTime.Add(2 * time.Minute)
+	if err := os.WriteFile(files.serverCertificate, []byte("invalid rotation"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := configuration.GetConfigForClient(nil); err == nil {
+		t.Fatal("invalid rotation was accepted")
+	}
+
+	serverCertificate, serverKey, _ := issueCertificate(
+		t, files.caCertificateValue, files.caKey, 8, currentTime, false, "server.platform.test",
+	)
+	writePEM(t, files.serverCertificate, "CERTIFICATE", serverCertificate.Raw)
+	writePrivateKey(t, files.serverKey, serverKey)
+	if _, err := configuration.GetConfigForClient(nil); err == nil {
+		t.Fatal("replacement was retried before the bounded retry interval elapsed")
+	}
+
+	currentTime = currentTime.Add(time.Minute)
+	reloaded, err := configuration.GetConfigForClient(nil)
+	if err != nil {
+		t.Fatalf("valid replacement not loaded after retry interval: %v", err)
+	}
+	if reloaded.Certificates[0].Leaf.SerialNumber.Int64() != 8 {
+		t.Fatalf("reloaded serial = %s, want 8", reloaded.Certificates[0].Leaf.SerialNumber)
+	}
+}
+
 func TestServerMTLSReloadsClientTrustBundle(t *testing.T) {
 	now := time.Now().UTC()
 	files := newTestPKI(t, now)
@@ -264,6 +302,47 @@ func TestServerTLSRejectsClientOnlyLeafAtStartup(t *testing.T) {
 		Mode: ServerTLS, CertificateFile: files.serverCertificate, PrivateKeyFile: files.serverKey,
 	}, func() time.Time { return now }, 0); err == nil {
 		t.Fatal("client-only leaf certificate was accepted as a server certificate")
+	}
+}
+
+func TestLoadCAPoolRejectsPartiallyInvalidBundles(t *testing.T) {
+	now := time.Now().UTC()
+	validAuthority, _ := issueCA(t, now)
+	validPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: validAuthority.Raw})
+	otherAuthority, otherKey := issueCA(t, now)
+	nonCA, _, _ := issueCertificate(t, otherAuthority, otherKey, 7, now, true, "client.platform.test")
+	expiredAuthority, _ := issueCA(t, now.Add(-48*time.Hour))
+
+	if _, err := loadCAPool(append(append([]byte(nil), validPEM...), validPEM...), now); err != nil {
+		t.Fatalf("valid CA bundle rejected: %v", err)
+	}
+
+	tests := map[string][]byte{
+		"trailing data": append(append([]byte(nil), validPEM...), []byte("not pem")...),
+		"forbidden block": append(append([]byte(nil), validPEM...), pem.EncodeToMemory(&pem.Block{
+			Type: "PRIVATE KEY", Bytes: []byte{1, 2, 3},
+		})...),
+		"malformed certificate": append(append([]byte(nil), validPEM...), pem.EncodeToMemory(&pem.Block{
+			Type: "CERTIFICATE", Bytes: []byte{1, 2, 3},
+		})...),
+		"non CA certificate": append(append([]byte(nil), validPEM...), pem.EncodeToMemory(&pem.Block{
+			Type: "CERTIFICATE", Bytes: nonCA.Raw,
+		})...),
+		"expired CA": append(append([]byte(nil), validPEM...), pem.EncodeToMemory(&pem.Block{
+			Type: "CERTIFICATE", Bytes: expiredAuthority.Raw,
+		})...),
+		"leading data": append([]byte("not pem\n"), validPEM...),
+	}
+	for name, bundle := range tests {
+		t.Run(name, func(t *testing.T) {
+			if _, err := loadCAPool(bundle, now); err == nil {
+				t.Fatal("partially invalid CA bundle accepted")
+			}
+		})
+	}
+
+	if _, err := loadCAPool(bytes.TrimSpace(validPEM), now); err != nil {
+		t.Fatalf("valid CA bundle without trailing newline rejected: %v", err)
 	}
 }
 

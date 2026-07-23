@@ -6,6 +6,7 @@ const documentsCount = document.querySelector('[data-documents-result-count]');
 const documentsMore = document.querySelector('[data-documents-more]');
 const documentsFilter = document.querySelector('[data-documents-filter-form]');
 const documentsReset = document.querySelector('[data-documents-filter-reset]');
+const documentsDetailStatus = document.querySelector('[data-documents-detail-status]');
 
 const documentsState = {
   items: [],
@@ -45,6 +46,14 @@ function moduleLabel(value) {
   return value === 'core.documents' ? 'WERK Dokumente' : value || 'Unbekannte Quelle';
 }
 
+function accessReasonLabel(value) {
+  return value === 'shared-directly-with-me' ? 'Direkt mit mir geteilt' : 'Von mir erstellt';
+}
+
+function validAccessReason(value) {
+  return value === 'created-by-me' || value === 'shared-directly-with-me';
+}
+
 function formatDate(value, withTime = false) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return '—';
@@ -69,6 +78,7 @@ function currentFilters() {
     q: String(data.get('q') || '').trim(),
     status: String(data.get('status') || ''),
     classification: String(data.get('classification') || ''),
+    access: String(data.get('access') || ''),
   };
 }
 
@@ -78,12 +88,17 @@ function documentListURL(cursor = '') {
   if (filters.q) parameters.set('q', filters.q);
   if (filters.status) parameters.set('status', filters.status);
   if (filters.classification) parameters.set('classification', filters.classification);
+  if (filters.access) parameters.set('access', filters.access);
   if (cursor) parameters.set('cursor', cursor);
   return `/api/v1/documents?${parameters}`;
 }
 
 function setDocumentsBusy(value) {
   documentsRoot?.setAttribute('aria-busy', String(value));
+}
+
+function announceDocumentDetail(message) {
+  if (documentsDetailStatus) documentsDetailStatus.textContent = message;
 }
 
 function redirectToSignIn() {
@@ -96,6 +111,7 @@ function redirectToSignIn() {
   documentsEmpty?.setAttribute('hidden', '');
   documentsMore?.setAttribute('hidden', '');
   renderDocumentPlaceholder('Sitzung beendet', 'Sie werden zur Anmeldung weitergeleitet.');
+  announceDocumentDetail('Sitzung beendet. Sie werden zur Anmeldung weitergeleitet.');
   setDocumentsBusy(false);
   window.location.replace('/');
 }
@@ -111,19 +127,27 @@ function createClassificationBadge(level) {
   return badge;
 }
 
+function createAccessBadge(reason) {
+  return element('span', `documents-access-reason is-${reason || 'unknown'}`, accessReasonLabel(reason));
+}
+
 function renderDocumentsList() {
   documentsList?.replaceChildren();
   updateDocumentsCount();
   if (!documentsState.items.length) {
     const filters = currentFilters();
-    const filtered = Boolean(filters.q || filters.classification || filters.status === 'archived');
+    const filtered = Boolean(filters.q || filters.classification || filters.status === 'archived' || filters.access);
     documentsEmpty?.removeAttribute('hidden');
     const title = documentsEmpty?.querySelector('h3');
     const description = documentsEmpty?.querySelector('p');
-    if (title) title.textContent = filtered ? 'Keine passenden Dokumente' : 'Noch keine Dokumente';
-    if (description) description.textContent = filtered
-      ? 'Passen Sie Suche oder Filter an, um andere sichtbare Dokumente zu finden.'
-      : 'Von Ihnen erzeugte, veröffentlichte Dokumente erscheinen automatisch in dieser Ansicht.';
+    if (title) title.textContent = filters.access === 'shared-directly-with-me'
+      ? 'Keine direkt geteilten Dokumente'
+      : (filtered ? 'Keine passenden Dokumente' : 'Noch keine sichtbaren Dokumente');
+    if (description) description.textContent = filters.access === 'shared-directly-with-me'
+      ? 'Aktuell ist kein veröffentlichtes Dokument direkt mit Ihrem Arbeitskonto geteilt.'
+      : (filtered
+        ? 'Passen Sie Suche oder Filter an, um andere sichtbare Dokumente zu finden.'
+        : 'Eigene und direkt mit Ihnen geteilte, veröffentlichte Dokumente erscheinen hier.');
     renderDocumentPlaceholder();
     return;
   }
@@ -143,6 +167,7 @@ function renderDocumentsList() {
     content.append(element('strong', '', document.title || 'Unbenanntes Dokument'));
     const meta = element('span', 'documents-list-meta');
     meta.append(createClassificationBadge(document.classification?.level));
+    meta.append(createAccessBadge(document.access_reason));
     meta.append(element('span', '', `Version ${document.latest_version?.version_number || '—'}`));
     meta.append(element('span', '', formatDate(document.updated_at)));
     content.append(meta);
@@ -174,7 +199,7 @@ function appendDetailField(container, label, value, className = '') {
 function renderDocumentDetail(payload) {
   const document = payload?.document;
   const versions = Array.isArray(payload?.versions) ? payload.versions : [];
-  if (!document || document.id !== documentsState.selectedId) return;
+  if (!document || document.id !== documentsState.selectedId || !validAccessReason(document.access_reason)) return false;
   documentsDetail?.replaceChildren();
 
   const header = element('div', 'documents-detail-header');
@@ -184,6 +209,7 @@ function renderDocumentDetail(payload) {
   heading.append(element('p', 'admin-breadcrumb', 'Dokumentansicht'), title);
   const badges = element('div', 'documents-detail-badges');
   badges.append(createClassificationBadge(document.classification?.level));
+  badges.append(createAccessBadge(document.access_reason));
   badges.append(element('span', `documents-list-status is-${document.status || 'unknown'}`, documentStatusLabel(document.status)));
   header.append(heading, badges);
 
@@ -192,6 +218,7 @@ function renderDocumentDetail(payload) {
   governanceTitle.append(element('h3', '', 'Einordnung und Aufbewahrung'), element('span', '', `Revision ${document.classification?.revision || '—'}`));
   const metadata = element('dl', 'documents-detail-grid');
   appendDetailField(metadata, 'Klassifikation', classificationLabel(document.classification?.level));
+  appendDetailField(metadata, 'Zugriff', accessReasonLabel(document.access_reason));
   appendDetailField(metadata, 'Aufbewahrungsklasse', document.classification?.retention_class || '—', 'mono');
   appendDetailField(metadata, 'Aufbewahrung bis', document.classification?.retention_until ? formatDate(document.classification.retention_until) : 'Nicht festgelegt');
   appendDetailField(metadata, 'Legal Hold', document.classification?.legal_hold ? 'Aktiv – Löschung gesperrt' : 'Nicht aktiv');
@@ -218,6 +245,7 @@ function renderDocumentDetail(payload) {
   const boundary = element('div', 'documents-detail-boundary');
   boundary.append(element('strong', '', 'Inhalt getrennt geschützt'), element('span', '', 'Dieser Bereich liest keine Blob-, Provider- oder Transferdaten.'));
   documentsDetail?.append(header, governance, history, boundary);
+  return true;
 }
 
 function renderDocumentDetailError(message, retry) {
@@ -241,10 +269,13 @@ async function selectDocument(documentID, moveFocus = false) {
   renderDocumentsList();
   documentsDetail?.setAttribute('aria-busy', 'true');
   renderDocumentPlaceholder('Dokument wird geladen', 'Klassifikation und Versionshistorie werden serverseitig geprüft.');
+  announceDocumentDetail('Dokumentdetails werden geladen.');
   try {
     const payload = await fetchDocumentsJSON(`/api/v1/documents/${encodeURIComponent(documentID)}`);
     if (requestVersion !== documentsState.detailRequest || documentsState.selectedId !== documentID) return;
-    renderDocumentDetail(payload);
+    if (!renderDocumentDetail(payload)) throw new DocumentsRequestError(502);
+    const selected = payload?.document?.title || 'Dokument';
+    announceDocumentDetail(`${selected}: Dokumentdetails geladen.`);
     if (moveFocus) documentsDetail?.focus({ preventScroll: true });
   } catch (error) {
     if (requestVersion !== documentsState.detailRequest || error.status === 401) return;
@@ -253,8 +284,10 @@ async function selectDocument(documentID, moveFocus = false) {
       documentsState.selectedId = '';
       renderDocumentsList();
       renderDocumentDetailError('Das Dokument existiert nicht mehr oder ist für dieses Konto nicht sichtbar.');
+      announceDocumentDetail('Dokument nicht verfügbar oder für dieses Konto nicht mehr sichtbar.');
     } else {
       renderDocumentDetailError('Die geprüften Dokumentdetails konnten nicht geladen werden.', () => selectDocument(documentID, false));
+      announceDocumentDetail('Dokumentdetails konnten nicht geladen werden.');
     }
   } finally {
     if (requestVersion === documentsState.detailRequest) documentsDetail?.setAttribute('aria-busy', 'false');
@@ -272,7 +305,7 @@ function renderListFailure(status) {
   const description = documentsEmpty?.querySelector('p');
   if (title) title.textContent = status === 403 ? 'Keine Berechtigung' : 'Dokumente nicht verfügbar';
   if (description) description.textContent = status === 403
-    ? 'Für dieses Arbeitskonto wurde die persönliche Dokumentansicht nicht freigeschaltet.'
+    ? 'Für dieses Arbeitskonto wurde die Dokumentenansicht nicht freigeschaltet.'
     : 'Die Dokumentmetadaten konnten nicht geladen werden. Versuchen Sie es erneut.';
   if (status !== 403 && documentsEmpty) {
     const retry = element('button', 'button button-secondary', 'Erneut versuchen');
@@ -304,7 +337,8 @@ async function loadDocuments({ append = false } = {}) {
   try {
     const page = await fetchDocumentsJSON(documentListURL(cursor));
     if (requestVersion !== documentsState.listRequest) return;
-    if (page.visibility_scope !== 'created-by-me' || !Array.isArray(page.items)) throw new DocumentsRequestError(502);
+    if (page.visibility_scope !== 'created-or-directly-shared-with-me' || !Array.isArray(page.items) ||
+        page.items.some((item) => !validAccessReason(item?.access_reason))) throw new DocumentsRequestError(502);
     if (append) {
       const knownIDs = new Set(documentsState.items.map((item) => item.id));
       documentsState.items = documentsState.items.concat(page.items.filter((item) => !knownIDs.has(item.id)));

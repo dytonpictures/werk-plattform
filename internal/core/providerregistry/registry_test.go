@@ -229,6 +229,7 @@ func TestResolveSupportsExplicitInstallationAndTenantScopes(t *testing.T) {
 	}
 	if resolved.ProviderID != provider.ID || resolved.AdapterKey != provider.AdapterKey ||
 		resolved.RegistryContractVersion != provider.RegistryContractVersion ||
+		resolved.ProviderRevision != provider.Revision || resolved.BindingRevision != binding.Revision ||
 		resolved.OperationBoundary != request.Boundary || !resolved.OperationTenantID.IsZero() {
 		t.Fatal("resolution does not bind the requested provider and operation")
 	}
@@ -261,6 +262,74 @@ func TestResolveSupportsExplicitInstallationAndTenantScopes(t *testing.T) {
 		resolvedTenantProvider.OperationTenantID != tenantID {
 		t.Fatal("tenant provider resolution did not preserve both tenant coordinates")
 	}
+}
+
+func TestResolutionValidateRejectsStructurallyInconsistentSnapshots(t *testing.T) {
+	service, capability, provider, binding, request := validResolution()
+	valid, err := Resolve(request, service, capability, provider, binding)
+	if err != nil {
+		t.Fatalf("resolve valid snapshot: %v", err)
+	}
+	if err := valid.Validate(); err != nil {
+		t.Fatalf("valid resolution rejected: %v", err)
+	}
+
+	tenantID := tenancy.TenantID{9}
+	tests := map[string]func(*Resolution){
+		"zero provider revision": func(value *Resolution) { value.ProviderRevision = 0 },
+		"zero binding revision":  func(value *Resolution) { value.BindingRevision = 0 },
+		"wrong provider namespace": func(value *Resolution) {
+			value.ProviderKey = "core.other.service.object-store.provider.local"
+		},
+		"wrong capability namespace": func(value *Resolution) {
+			value.CapabilityKey = "core.other.service.object-store.capability.read"
+		},
+		"installation operation with tenant": func(value *Resolution) {
+			value.OperationTenantID = tenantID
+		},
+		"tenant provider for installation operation": func(value *Resolution) {
+			value.ProviderConfigScope = ConfigScopeTenant
+			value.ProviderTenantID = tenantID
+		},
+		"tenant operation without tenant": func(value *Resolution) {
+			value.OperationBoundary = OperationBoundaryTenant
+		},
+		"tenant provider mismatch": func(value *Resolution) {
+			value.OperationBoundary = OperationBoundaryTenant
+			value.OperationTenantID = tenantID
+			value.ProviderConfigScope = ConfigScopeTenant
+			value.ProviderTenantID = tenancy.TenantID{10}
+		},
+	}
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			candidate := valid
+			mutate(&candidate)
+			if !errors.Is(candidate.Validate(), ErrInvalid) {
+				t.Fatal("invalid resolution snapshot accepted")
+			}
+		})
+	}
+}
+
+func TestResolutionValidateDoesNotAuthorizeAConsistentSnapshot(t *testing.T) {
+	service, capability, provider, binding, request := validResolution()
+	resolved, err := Resolve(request, service, capability, provider, binding)
+	if err != nil {
+		t.Fatalf("resolve valid snapshot: %v", err)
+	}
+
+	constructed := resolved
+	constructed.ProviderRevision++
+	constructed.BindingRevision++
+	if err := constructed.Validate(); err != nil {
+		t.Fatalf("structurally consistent application data rejected: %v", err)
+	}
+	if constructed == resolved {
+		t.Fatal("test did not construct a distinct non-authoritative snapshot")
+	}
+	// Validate deliberately cannot establish authority or freshness. A caller
+	// must fully re-resolve the current four-part registry contract before use.
 }
 
 func TestResolveFailsClosedForScopeAndTenantMismatch(t *testing.T) {

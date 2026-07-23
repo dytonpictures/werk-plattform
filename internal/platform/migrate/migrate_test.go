@@ -387,6 +387,44 @@ func TestDocumentReadContractUsesCollectionPermissionWithoutStorageAccess(t *tes
 	t.Fatal("document read contract migration is not embedded")
 }
 
+func TestDocumentDirectVisibilityContractKeepsBindingLocalAndRevocable(t *testing.T) {
+	migrations, err := loadMigrations()
+	if err != nil {
+		t.Fatalf("load migrations: %v", err)
+	}
+	for _, migration := range migrations {
+		if migration.name != "000034_document_direct_visibility.sql" {
+			continue
+		}
+		for _, fragment := range []string{
+			"core.documents.document.visibility-manage",
+			"document_account_visibility_bindings",
+			"document-visibility-granted.v1",
+			"document-visibility-revoked.v1",
+			"document_account_visibility_active_idx",
+			"AS RESTRICTIVE TO werk_work_runtime, werk_service_runtime",
+			"document visibility bindings cannot be deleted",
+		} {
+			if !strings.Contains(migration.contents, fragment) {
+				t.Errorf("document visibility migration is missing %q", fragment)
+			}
+		}
+		for _, forbidden := range []string{
+			"TO werk_admin_runtime;",
+			"TO werk_worker_runtime;",
+			"GRANT DELETE",
+			"principal_kind",
+			"allow_deny",
+		} {
+			if strings.Contains(migration.contents, forbidden) {
+				t.Errorf("document visibility contract unexpectedly contains %q", forbidden)
+			}
+		}
+		return
+	}
+	t.Fatal("document visibility migration is not embedded")
+}
+
 func TestBusinessAuditContractKeepsDualActorsAndServerPolicy(t *testing.T) {
 	migrations, err := loadMigrations()
 	if err != nil {

@@ -13,7 +13,10 @@ func TestNormalizeListQuery(t *testing.T) {
 		t.Fatalf("normalized query = %#v, err = %v", query, err)
 	}
 	validCursor := Cursor{UpdatedAt: time.Now().UTC(), ID: "0196f000-0000-7000-8000-000000000901"}
-	if _, err := NormalizeListQuery(ListQuery{Limit: MaximumLimit, Status: "active", Classification: "confidential", Cursor: &validCursor}); err != nil {
+	if _, err := NormalizeListQuery(ListQuery{
+		Limit: MaximumLimit, Status: "active", Classification: "confidential",
+		AccessReason: "shared-directly-with-me", Cursor: &validCursor,
+	}); err != nil {
 		t.Fatalf("valid query rejected: %v", err)
 	}
 	for name, candidate := range map[string]ListQuery{
@@ -21,6 +24,7 @@ func TestNormalizeListQuery(t *testing.T) {
 		"search":         {Search: strings.Repeat("a", maximumSearchSize+1)},
 		"status":         {Status: "deleted"},
 		"classification": {Classification: "public"},
+		"access":         {AccessReason: "tenant-wide"},
 		"cursor":         {Cursor: &Cursor{UpdatedAt: time.Now().UTC(), ID: "not-a-uuid"}},
 	} {
 		t.Run(name, func(t *testing.T) {

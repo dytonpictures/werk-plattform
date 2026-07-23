@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -40,7 +41,7 @@ func TestDocumentRoutesRequireWorkPermissionsAndReturnMetadataOnly(t *testing.T)
 	now := time.Date(2026, 7, 22, 10, 0, 0, 0, time.UTC)
 	summary := documentstore.Summary{
 		ID: documentID, Title: "Rahmenvertrag", Status: "active", SourceModule: "core.documents",
-		CreatedAt: now, UpdatedAt: now, Version: 3,
+		CreatedAt: now, UpdatedAt: now, Version: 3, AccessReason: "created-by-me",
 		LatestVersion:  documentstore.LatestVersionView{ID: "0196f000-0000-7000-8000-000000000a03", VersionNumber: 2, Source: "upload", PublishedAt: now},
 		Classification: documentstore.ClassificationView{Revision: 1, Level: "confidential", RetentionClass: "business.standard"},
 	}
@@ -52,18 +53,19 @@ func TestDocumentRoutesRequireWorkPermissionsAndReturnMetadataOnly(t *testing.T)
 	}
 	router := NewRouterWithServices(config.Config{}, readinessStub{}, testLogger(), workAuthStub{actor: actor}, nil, nil, WithDocumentService(service))
 
-	listed := request(t, router, http.MethodGet, "/api/v1/documents?status=active&classification=confidential&limit=25", "")
+	listed := request(t, router, http.MethodGet, "/api/v1/documents?status=active&classification=confidential&access=created-by-me&limit=25", "")
 	if listed.Code != http.StatusOK || listed.Header().Get("Cache-Control") != "no-store" ||
-		!containsAll(listed.Body.String(), `"visibility_scope":"created-by-me"`, `"title":"Rahmenvertrag"`, `"level":"confidential"`, `"latest_version"`) ||
-		containsAll(listed.Body.String(), `"blob_id"`) {
+		!containsAll(listed.Body.String(), `"visibility_scope":"created-or-directly-shared-with-me"`, `"title":"Rahmenvertrag"`, `"access_reason":"created-by-me"`, `"level":"confidential"`, `"latest_version"`) {
 		t.Fatalf("document list response = %d %s", listed.Code, listed.Body.String())
 	}
+	assertDocumentResponseHasNoInternalFields(t, listed.Body.String())
 
 	detail := request(t, router, http.MethodGet, "/api/v1/documents/"+documentID, "")
 	if detail.Code != http.StatusOK || detail.Header().Get("ETag") != `"3"` ||
 		!containsAll(detail.Body.String(), `"versions":[`, `"version_number":2`) {
 		t.Fatalf("document detail response = %d %s", detail.Code, detail.Body.String())
 	}
+	assertDocumentResponseHasNoInternalFields(t, detail.Body.String())
 
 	listOnlyRouter := NewRouterWithServices(config.Config{}, readinessStub{}, testLogger(), workAuthStub{
 		actor: actor,
@@ -86,6 +88,10 @@ func TestDocumentRoutesRequireWorkPermissionsAndReturnMetadataOnly(t *testing.T)
 	if invalid.Code != http.StatusBadRequest {
 		t.Fatalf("invalid query status = %d, want %d", invalid.Code, http.StatusBadRequest)
 	}
+	invalidAccess := request(t, router, http.MethodGet, "/api/v1/documents?access=tenant-wide", "")
+	if invalidAccess.Code != http.StatusBadRequest {
+		t.Fatalf("invalid access query status = %d, want %d", invalidAccess.Code, http.StatusBadRequest)
+	}
 
 	deniedRouter := NewRouterWithServices(config.Config{}, readinessStub{}, testLogger(), workAuthStub{actor: actor, authorizeErr: coreauth.ErrDenied}, nil, nil, WithDocumentService(service))
 	if denied := request(t, deniedRouter, http.MethodGet, "/api/v1/documents", ""); denied.Code != http.StatusForbidden {
@@ -93,6 +99,20 @@ func TestDocumentRoutesRequireWorkPermissionsAndReturnMetadataOnly(t *testing.T)
 	}
 	if hidden := request(t, deniedRouter, http.MethodGet, "/api/v1/documents/"+documentID, ""); hidden.Code != http.StatusNotFound {
 		t.Fatalf("denied detail status = %d, want %d", hidden.Code, http.StatusNotFound)
+	}
+}
+
+func assertDocumentResponseHasNoInternalFields(t *testing.T, body string) {
+	t.Helper()
+	for _, key := range []string{
+		"blob_id", "created_by_account_id", "grantee_account_id",
+		"granted_by_account_id", "revoked_by_account_id", "binding_id",
+		"sha256", "size_bytes", "media_type", "provider_key", "opaque_key",
+		"provider_checksum",
+	} {
+		if strings.Contains(body, `"`+key+`"`) {
+			t.Errorf("document response exposes internal field %q: %s", key, body)
+		}
 	}
 }
 
