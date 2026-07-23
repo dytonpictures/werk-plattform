@@ -1,0 +1,961 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "WERK Operations API",
+    "version": "0.3.0",
+    "description": "Fachneutrale Betriebsendpunkte des WERK-Plattformkerns. Core Identity ist die interne Identitäts- und Zugriffsschicht; externe Identity Provider werden ausschließlich über optionale Adapter angebunden. Work-, Admin- und Service-Verträge bleiben getrennt."
+  },
+  "x-werk-api-boundaries": {
+    "work": "/api/v1",
+    "admin": "/admin/v1",
+    "service": "/service/v1"
+  },
+  "paths": {
+    "/admin/v1/tenants": {
+      "get": {
+        "operationId": "listTenants",
+        "summary": "Listet die installationsweit verwalteten Mandanten",
+        "security": [{ "sessionCookie": [] }],
+        "responses": {
+          "200": { "description": "Mandantenliste", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/TenantList" } } } },
+          "401": { "description": "Keine gueltige MFA-Admin-Session", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } },
+          "403": { "description": "Admin-Berechtigung fehlt", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } }
+        }
+      },
+      "post": {
+        "operationId": "createTenant",
+        "summary": "Legt einen isolierten Mandanten atomar mit Audit und Outbox-Ereignis an",
+        "security": [{ "sessionCookie": [], "csrfHeader": [] }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CreateTenant" } } } },
+        "responses": {
+          "201": { "description": "Mandant angelegt", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Tenant" } } } },
+          "400": { "description": "Ungueltige Mandantendaten", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } },
+          "401": { "description": "Keine gueltige MFA-Admin-Session", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } },
+          "403": { "description": "Admin-Berechtigung fehlt", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } }
+        }
+      }
+    },
+    "/admin/v1/tenants/{tenantId}": {
+      "parameters": [
+        { "name": "tenantId", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } },
+        { "$ref": "#/components/parameters/IfMatchVersion" }
+      ],
+      "put": {
+        "operationId": "updateTenant",
+        "summary": "Ersetzt die aenderbaren Mandantendaten bei passender Ressourcenversion",
+        "security": [{ "sessionCookie": [], "csrfHeader": [] }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/UpdateTenant" } } } },
+        "responses": {
+          "200": { "description": "Mandant aktualisiert", "headers": { "ETag": { "$ref": "#/components/headers/EntityVersion" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Tenant" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "description": "Keine gueltige MFA-Admin-Session", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } },
+          "403": { "description": "Admin-Berechtigung fehlt", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } },
+          "404": { "description": "Mandant nicht gefunden", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } },
+          "412": { "$ref": "#/components/responses/VersionConflict" },
+          "428": { "$ref": "#/components/responses/VersionRequired" }
+        }
+      }
+    },
+    "/admin/v1/tenants/{tenantId}/organizational-units": {
+      "parameters": [{ "name": "tenantId", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }],
+      "get": {
+        "operationId": "listOrganizationalUnits",
+        "summary": "Listet Organisationseinheiten innerhalb eines expliziten Mandanten",
+        "security": [{ "sessionCookie": [] }],
+        "responses": {
+          "200": { "description": "Organisationseinheiten", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OrganizationalUnitList" } } } },
+          "400": { "description": "Ungueltige Tenant-ID", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } },
+          "401": { "description": "Keine gueltige MFA-Admin-Session", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } },
+          "403": { "description": "Admin-Berechtigung fehlt", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } }
+        }
+      },
+      "post": {
+        "operationId": "createOrganizationalUnit",
+        "summary": "Legt eine tenantgebundene Organisationseinheit mit Audit und Outbox-Ereignis an",
+        "security": [{ "sessionCookie": [], "csrfHeader": [] }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CreateOrganizationalUnit" } } } },
+        "responses": {
+          "201": { "description": "Organisationseinheit angelegt", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OrganizationalUnit" } } } },
+          "400": { "description": "Ungueltige oder widerspruechliche Organisationsdaten", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } },
+          "401": { "description": "Keine gueltige MFA-Admin-Session", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } },
+          "403": { "description": "Admin-Berechtigung fehlt", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } }
+        }
+      }
+    },
+    "/admin/v1/tenants/{tenantId}/organizational-units/{unitId}": {
+      "parameters": [
+        { "name": "tenantId", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } },
+        { "name": "unitId", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } },
+        { "$ref": "#/components/parameters/IfMatchVersion" }
+      ],
+      "put": {
+        "operationId": "updateOrganizationalUnit",
+        "summary": "Ersetzt eine Organisationseinheit bei passender Ressourcenversion",
+        "security": [{ "sessionCookie": [], "csrfHeader": [] }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/UpdateOrganizationalUnit" } } } },
+        "responses": {
+          "200": { "description": "Organisationseinheit aktualisiert", "headers": { "ETag": { "$ref": "#/components/headers/EntityVersion" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OrganizationalUnit" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "description": "Keine gueltige MFA-Admin-Session", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } },
+          "403": { "description": "Admin-Berechtigung fehlt", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } },
+          "404": { "description": "Organisationseinheit nicht gefunden", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } },
+          "412": { "$ref": "#/components/responses/VersionConflict" },
+          "428": { "$ref": "#/components/responses/VersionRequired" }
+        }
+      }
+    },
+    "/admin/v1/security-audit": {
+      "get": {
+        "operationId": "listSecurityAuditEvents",
+        "summary": "Listet installationsweite Sicherheitsereignisse und protokolliert den Abruf atomar",
+        "description": "Erfordert eine MFA-bestaetigte Admin-Session und core.audit.security-event.read. Freie details-JSON- und Session-Rohdaten sind absichtlich nicht Bestandteil der Antwort.",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [
+          { "name": "tenant_id", "in": "query", "required": false, "schema": { "type": "string", "format": "uuid" } },
+          { "name": "event_type", "in": "query", "required": false, "schema": { "type": "string", "pattern": "^[a-z][a-z0-9-]*([.][a-z][a-z0-9-]*)+[.]v[1-9][0-9]*$", "maxLength": 256 } },
+          { "name": "outcome", "in": "query", "required": false, "schema": { "type": "string", "enum": ["succeeded", "denied", "failed"] } },
+          { "name": "limit", "in": "query", "required": false, "schema": { "type": "integer", "minimum": 1, "maximum": 100, "default": 50 } },
+          { "name": "cursor", "in": "query", "required": false, "description": "Opaker Cursor aus next_cursor der vorherigen Seite.", "schema": { "type": "string", "minLength": 1, "maxLength": 512 } }
+        ],
+        "responses": {
+          "200": { "description": "Absteigend sortierte, begrenzte Audit-Seite", "headers": { "Cache-Control": { "description": "Verhindert die Zwischenspeicherung geschuetzter Auditdaten.", "schema": { "type": "string", "const": "no-store" } } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SecurityAuditPage" } } } },
+          "400": { "description": "Ungueltiger Filter, Grenzwert oder Cursor", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } },
+          "401": { "description": "Keine gueltige MFA-Admin-Session", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } },
+          "403": { "description": "Audit-Berechtigung fehlt", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } }
+        }
+      }
+    },
+    "/admin/v1/work-users": {
+      "get": {
+        "operationId": "listWorkUsers",
+        "summary": "Listet Arbeitskonten eines expliziten Mandanten fuer die Benutzerverwaltung",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [{ "name": "tenant_id", "in": "query", "required": true, "schema": { "type": "string", "format": "uuid" } }],
+        "responses": {
+          "200": { "description": "Arbeitskonten", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/WorkUserDirectory" } } } },
+          "400": { "description": "Tenant-ID fehlt oder ist ungueltig", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } },
+          "401": { "description": "Keine gueltige MFA-Admin-Session", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } },
+          "403": { "description": "Admin-Berechtigung fehlt", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } }
+        }
+      },
+      "post": {
+        "operationId": "createWorkUser",
+        "summary": "Legt ein tenantgebundenes Arbeitskonto mit Person, Mitgliedschaft und Basisrolle an",
+        "security": [{ "sessionCookie": [], "csrfHeader": [] }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CreateWorkUser" } } } },
+        "responses": {
+          "201": { "description": "Arbeitskonto angelegt", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/WorkUser" } } } },
+          "400": { "description": "Ungueltige oder widerspruechliche Benutzerdaten", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } },
+          "401": { "description": "Keine gueltige MFA-Admin-Session", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } },
+          "403": { "description": "Admin-Berechtigung fehlt", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } }
+        }
+      }
+    },
+    "/admin/v1/work-roles": {
+      "get": {
+        "operationId": "listWorkRoles",
+        "summary": "Listet tenantgebundene Arbeitsrollen und den registrierten Work-Berechtigungskatalog",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [{ "name": "tenant_id", "in": "query", "required": true, "schema": { "type": "string", "format": "uuid" } }],
+        "responses": {
+          "200": { "description": "Arbeitsrollen und Work-Berechtigungen", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/WorkRoleCatalog" } } } },
+          "400": { "description": "Tenant-ID fehlt oder ist ungueltig", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } },
+          "401": { "description": "Keine gueltige MFA-Admin-Session", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } },
+          "403": { "description": "Admin-Berechtigung fehlt", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } }
+        }
+      },
+      "post": {
+        "operationId": "createWorkRole",
+        "summary": "Legt eine veraenderbare Work-Rolle aus registrierten Work-Berechtigungen desselben Mandanten an",
+        "security": [{ "sessionCookie": [], "csrfHeader": [] }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CreateWorkRole" } } } },
+        "responses": {
+          "201": { "description": "Arbeitsrolle angelegt", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/WorkRole" } } } },
+          "400": { "description": "Ungueltige, doppelte oder bereichsfremde Rollendaten", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } },
+          "401": { "description": "Keine gueltige MFA-Admin-Session", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } },
+          "403": { "description": "Admin-Berechtigung fehlt", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } }
+        }
+      }
+    },
+    "/admin/v1/work-roles/{roleId}": {
+      "parameters": [
+        { "name": "roleId", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } },
+        { "$ref": "#/components/parameters/IfMatchVersion" }
+      ],
+      "put": {
+        "operationId": "updateWorkRole",
+        "summary": "Ersetzt eine frei verwaltbare Work-Rolle bei passender Ressourcenversion",
+        "security": [{ "sessionCookie": [], "csrfHeader": [] }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/UpdateWorkRole" } } } },
+        "responses": {
+          "200": { "description": "Arbeitsrolle aktualisiert", "headers": { "ETag": { "$ref": "#/components/headers/EntityVersion" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/WorkRole" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "description": "Keine gueltige MFA-Admin-Session", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } },
+          "403": { "description": "Admin-Berechtigung fehlt", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } },
+          "404": { "description": "Arbeitsrolle nicht gefunden", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } },
+          "409": { "description": "Geschuetzte Systemrolle", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } },
+          "412": { "$ref": "#/components/responses/VersionConflict" },
+          "428": { "$ref": "#/components/responses/VersionRequired" }
+        }
+      }
+    },
+    "/admin/v1/work-users/{accountId}/roles": {
+      "parameters": [{ "name": "accountId", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }],
+      "put": {
+        "operationId": "replaceWorkUserRoles",
+        "summary": "Ersetzt die aktiven tenantgebundenen Work-Rollenzuweisungen eines Arbeitskontos",
+        "security": [{ "sessionCookie": [], "csrfHeader": [] }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ReplaceWorkUserRoles" } } } },
+        "responses": {
+          "200": { "description": "Rollenzuweisungen ersetzt", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/WorkUserRoleAssignment" } } } },
+          "400": { "description": "Konto, Tenant oder Rollen widersprechen einander", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } },
+          "401": { "description": "Keine gueltige MFA-Admin-Session", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } },
+          "403": { "description": "Admin-Berechtigung fehlt", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } }
+        }
+      }
+    },
+    "/api/v1/workspace": {
+      "get": {
+        "operationId": "getWorkspaceOverview",
+        "summary": "Loest den tenantgebundenen Arbeitskontext aus der Work-Session auf",
+        "description": "Der Tenant wird ausschließlich aus der serverseitig aufgeloesten Work-Session uebernommen. Admin-, Service- und tenantfremde Kontexte werden abgelehnt.",
+        "security": [{ "sessionCookie": [] }],
+        "responses": {
+          "200": { "description": "Autorisierter Arbeitskontext", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/WorkspaceOverview" } } } },
+          "401": { "description": "Keine gueltige Work-Session oder Passwortwechsel noch offen", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } },
+          "403": { "description": "Workspace-Berechtigung oder tenantgebundener Kontext fehlt", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } },
+          "500": { "description": "Der serverseitige Arbeits- oder Organisationskontext konnte nicht konsistent aufgeloest werden", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } }
+        }
+      }
+    },
+    "/api/v1/documents": {
+      "get": {
+        "operationId": "listWorkDocuments",
+        "summary": "Listet eigene und direkt mit dem Arbeitskonto geteilte Dokumente",
+        "description": "Das Collection-Listenrecht autorisiert die persoenliche Metadatenprojektion. Core Documents begrenzt sie dokumentlokal auf selbst erzeugte oder ueber eine aktive direkte Kontobindung sichtbare Dokumente. Tenant, Datenprofil und Processing-Policy werden serverseitig geprueft. Die Detailansicht erfordert zusaetzlich das konkrete Dokument-Leserecht. Eine Bindung gewaehrt keine Update-, Versions-, Download- oder Storage-Berechtigung.",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [
+          { "name": "q", "in": "query", "required": false, "schema": { "type": "string", "maxLength": 120 } },
+          { "name": "status", "in": "query", "required": false, "schema": { "type": "string", "enum": ["active", "archived"] } },
+          { "name": "classification", "in": "query", "required": false, "schema": { "type": "string", "enum": ["internal", "confidential", "restricted"] } },
+          { "name": "access", "in": "query", "required": false, "schema": { "type": "string", "enum": ["created-by-me", "shared-directly-with-me"] } },
+          { "name": "limit", "in": "query", "required": false, "schema": { "type": "integer", "minimum": 1, "maximum": 100, "default": 25 } },
+          { "name": "cursor", "in": "query", "required": false, "description": "Opaker Cursor aus next_cursor der vorherigen Seite.", "schema": { "type": "string", "minLength": 1, "maxLength": 512 } }
+        ],
+        "responses": {
+          "200": { "description": "Absteigend sortierte, dokumentlokal gefilterte Metadaten", "headers": { "Cache-Control": { "description": "Verhindert die Zwischenspeicherung geschuetzter Dokumentmetadaten.", "schema": { "type": "string", "const": "no-store" } } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/DocumentPage" } } } },
+          "400": { "description": "Ungueltiger Filter, Grenzwert oder Cursor", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } },
+          "401": { "description": "Keine gueltige Work-Session", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } },
+          "403": { "description": "Collection-Listenrecht fehlt", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } },
+          "500": { "description": "Dokumentmetadaten konnten nicht geladen werden", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } }
+        }
+      }
+    },
+    "/api/v1/documents/{documentId}": {
+      "parameters": [{ "name": "documentId", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }],
+      "get": {
+        "operationId": "getWorkDocument",
+        "summary": "Laedt Dokumentmetadaten und die unveraenderliche Versionshistorie",
+        "description": "Nicht vorhandene, nicht berechtigte, nicht selbst erzeugte und nicht aktiv direkt gebundene IDs liefern einheitlich 404. Ein Widerruf wirkt bei der naechsten Lesetransaktion. Blob-, Provider-, Hash- und Transferdaten werden nicht ausgegeben.",
+        "security": [{ "sessionCookie": [] }],
+        "responses": {
+          "200": { "description": "Autorisierte Dokumentansicht", "headers": { "ETag": { "$ref": "#/components/headers/EntityVersion" }, "Cache-Control": { "description": "Verhindert die Zwischenspeicherung geschuetzter Dokumentmetadaten.", "schema": { "type": "string", "const": "no-store" } } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/DocumentDetail" } } } },
+          "400": { "description": "Ungueltige Dokument-ID", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } },
+          "401": { "description": "Keine gueltige Work-Session", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } },
+          "404": { "description": "Dokument nicht vorhanden oder nicht sichtbar", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } },
+          "500": { "description": "Dokumentansicht konnte nicht geladen werden", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } }
+        }
+      }
+    },
+    "/api/v1/auth/login": {
+      "post": {
+        "operationId": "loginInteractiveAccount",
+        "summary": "Prueft ein interaktives Core-Identity-Konto und erzeugt eine bereichsgebundene Session",
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/LoginRequest" } } }
+        },
+        "responses": {
+          "200": {
+            "description": "Anmeldung erfolgreich; das opaque Sessiontoken wird nur als HttpOnly-Cookie gesetzt.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/LoginResponse" } } }
+          },
+          "400": { "description": "Ungueltige Anmeldedaten", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } },
+          "401": { "description": "Authentifizierung fehlgeschlagen", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } }
+        }
+      }
+    },
+    "/api/v1/auth/session": {
+      "get": {
+        "operationId": "getInteractiveSession",
+        "summary": "Loest die aktuelle Session serverseitig auf",
+        "security": [{ "sessionCookie": [] }],
+        "responses": {
+          "200": { "description": "Gueltige Session", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Session" } } } },
+          "401": { "description": "Keine gueltige Session", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } }
+        }
+      }
+    },
+    "/api/v1/auth/mfa/challenge": {
+      "post": {
+        "operationId": "completeInteractiveMFAChallenge",
+        "summary": "Schliesst eine kurzlebige MFA-Anmeldechallenge mit TOTP- oder Recovery-Code ab",
+        "security": [{ "mfaChallengeCookie": [], "csrfHeader": [] }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/MFACode" } } } },
+        "responses": {
+          "200": { "description": "MFA erfolgreich; die bereichsgebundene Session wird als HttpOnly-Cookie gesetzt.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/LoginResponse" } } } },
+          "401": { "description": "Challenge oder Code ungueltig", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } }
+        }
+      }
+    },
+    "/api/v1/auth/mfa/totp/enrollment": {
+      "post": {
+        "operationId": "startTOTPEnrollment",
+        "summary": "Startet nach erneuter Passwortpruefung die TOTP-Einrichtung fuer ein Admin-Konto",
+        "security": [{ "sessionCookie": [], "csrfHeader": [] }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/TOTPEnrollmentRequest" } } } },
+        "responses": {
+          "201": { "description": "TOTP-Geheimnis wurde einmalig erzeugt", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/TOTPEnrollment" } } } },
+          "401": { "description": "Session oder Passwortpruefung ungueltig", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } }
+        }
+      }
+    },
+    "/api/v1/auth/mfa/totp/confirmation": {
+      "post": {
+        "operationId": "confirmTOTPEnrollment",
+        "summary": "Aktiviert den TOTP-Faktor und gibt Recovery-Codes genau einmal aus",
+        "security": [{ "sessionCookie": [], "csrfHeader": [] }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/TOTPConfirmation" } } } },
+        "responses": {
+          "200": { "description": "TOTP ist aktiv", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/TOTPActivation" } } } },
+          "401": { "description": "Session, Faktor oder Code ungueltig", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } }
+        }
+      }
+    },
+    "/api/v1/auth/logout": {
+      "post": {
+        "operationId": "logoutInteractiveSession",
+        "summary": "Widerruft die aktuelle Session",
+        "security": [{ "sessionCookie": [], "csrfHeader": [] }],
+        "responses": {
+          "204": { "description": "Session widerrufen" },
+          "401": { "description": "Keine gueltige Session", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } }
+        }
+      }
+    },
+    "/api/v1/auth/password": {
+      "post": {
+        "operationId": "changeInteractivePassword",
+        "summary": "Aendert das Passwort nach Pruefung des aktuellen Passworts",
+        "security": [{ "sessionCookie": [], "csrfHeader": [] }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PasswordChange" } } }
+        },
+        "responses": {
+          "200": { "description": "Passwort geaendert", "content": { "application/json": { "schema": { "type": "object", "required": ["password_changed"], "properties": { "password_changed": { "type": "boolean", "const": true } } } } } },
+          "400": { "description": "Das neue Passwort ist ungueltig", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } },
+          "401": { "description": "Passwortwechsel abgelehnt", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } }
+        }
+      }
+    },
+    "/api/v1/auth/preferences": {
+      "patch": {
+        "operationId": "updateInteractiveAccountPreferences",
+        "summary": "Speichert globale Oberflaechenpraeferenzen fuer das angemeldete Konto",
+        "security": [{ "sessionCookie": [], "csrfHeader": [] }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Preferences" } } }
+        },
+        "responses": {
+          "200": { "description": "Praeferenz gespeichert", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Preferences" } } } },
+          "400": { "description": "Ungueltige Praeferenz", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } },
+          "401": { "description": "Keine gueltige Session", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } }
+        }
+      }
+    },
+    "/health/live": {
+      "get": {
+        "operationId": "getLiveness",
+        "summary": "Prueft, ob der HTTP-Prozess antwortet",
+        "parameters": [{ "$ref": "#/components/parameters/CorrelationId" }],
+        "responses": {
+          "200": {
+            "description": "Der Prozess antwortet.",
+            "headers": {
+              "X-Request-ID": { "$ref": "#/components/headers/RequestId" },
+              "X-Correlation-ID": { "$ref": "#/components/headers/CorrelationId" }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Health" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/InvalidCorrelationId" }
+        }
+      }
+    },
+    "/health/ready": {
+      "get": {
+        "operationId": "getReadiness",
+        "summary": "Prueft die Einsatzbereitschaft des API-Dienstes",
+        "parameters": [{ "$ref": "#/components/parameters/CorrelationId" }],
+        "responses": {
+          "200": {
+            "description": "Alle zwingenden Abhaengigkeiten sind bereit.",
+            "headers": {
+              "X-Request-ID": { "$ref": "#/components/headers/RequestId" },
+              "X-Correlation-ID": { "$ref": "#/components/headers/CorrelationId" }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Health" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/InvalidCorrelationId" },
+          "503": { "$ref": "#/components/responses/NotReady" }
+        }
+      }
+    },
+    "/meta": {
+      "get": {
+        "operationId": "getMetadata",
+        "summary": "Liefert nicht vertrauliche Build-Metadaten",
+        "parameters": [{ "$ref": "#/components/parameters/CorrelationId" }],
+        "responses": {
+          "200": {
+            "description": "Build-Metadaten",
+            "headers": {
+              "X-Request-ID": { "$ref": "#/components/headers/RequestId" },
+              "X-Correlation-ID": { "$ref": "#/components/headers/CorrelationId" }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Metadata" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/InvalidCorrelationId" }
+        }
+      }
+    },
+    "/metrics": {
+      "get": {
+        "operationId": "getMetrics",
+        "summary": "Liefert interne Prometheus-Metriken",
+        "x-werk-visibility": "internal",
+        "parameters": [{ "$ref": "#/components/parameters/CorrelationId" }],
+        "responses": {
+          "200": {
+            "description": "Prometheus-Textformat ohne Tenant- oder Kontolabels",
+            "headers": {
+              "X-Request-ID": { "$ref": "#/components/headers/RequestId" },
+              "X-Correlation-ID": { "$ref": "#/components/headers/CorrelationId" }
+            },
+            "content": {
+              "text/plain": {
+                "schema": { "type": "string" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/InvalidCorrelationId" }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "sessionCookie": { "type": "apiKey", "in": "cookie", "name": "werk_session" },
+      "mfaChallengeCookie": { "type": "apiKey", "in": "cookie", "name": "werk_mfa_challenge" },
+      "csrfHeader": { "type": "apiKey", "in": "header", "name": "X-CSRF-Token", "description": "Muss bei schreibenden Cookie-Aufrufen dem SameSite-CSRF-Cookie entsprechen; zusaetzlich werden Origin und Fetch Metadata geprueft." }
+    },
+    "parameters": {
+      "CorrelationId": {
+        "name": "X-Correlation-ID",
+        "in": "header",
+        "required": false,
+        "description": "Gueltige UUID zur Korrelation mehrerer Aufrufe. Fehlt sie, erzeugt WERK eine UUIDv7.",
+        "schema": { "type": "string", "format": "uuid" }
+      },
+      "IfMatchVersion": {
+        "name": "If-Match",
+        "in": "header",
+        "required": true,
+        "description": "Starker Entity-Tag der zuletzt gelesenen positiven Ressourcenversion, zum Beispiel \"7\".",
+        "schema": { "type": "string", "pattern": "^\\\"[1-9][0-9]*\\\"$" }
+      }
+    },
+    "headers": {
+      "RequestId": {
+        "description": "Von WERK fuer diesen HTTP-Versuch erzeugte UUIDv7.",
+        "schema": { "type": "string", "format": "uuid" }
+      },
+      "CorrelationId": {
+        "description": "Propagierte oder von WERK erzeugte Korrelations-ID.",
+        "schema": { "type": "string", "format": "uuid" }
+      },
+      "EntityVersion": {
+        "description": "Starker Entity-Tag der gespeicherten Ressourcenversion.",
+        "schema": { "type": "string", "pattern": "^\\\"[1-9][0-9]*\\\"$" }
+      }
+    },
+    "responses": {
+      "InvalidCorrelationId": {
+        "description": "Der Korrelationsheader ist ungueltig.",
+        "headers": {
+          "X-Request-ID": { "$ref": "#/components/headers/RequestId" },
+          "X-Correlation-ID": { "$ref": "#/components/headers/CorrelationId" }
+        },
+        "content": {
+          "application/problem+json": {
+            "schema": { "$ref": "#/components/schemas/Problem" }
+          }
+        }
+      },
+      "NotReady": {
+        "description": "Eine zwingende Abhaengigkeit ist nicht bereit.",
+        "headers": {
+          "X-Request-ID": { "$ref": "#/components/headers/RequestId" },
+          "X-Correlation-ID": { "$ref": "#/components/headers/CorrelationId" }
+        },
+        "content": {
+          "application/problem+json": {
+            "schema": { "$ref": "#/components/schemas/Problem" }
+          }
+        }
+      },
+      "BadRequest": {
+        "description": "Die Anfrage oder Ressourcendaten sind ungueltig.",
+        "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } }
+      },
+      "VersionConflict": {
+        "description": "Die Ressource wurde seit dem Laden geaendert.",
+        "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } }
+      },
+      "VersionRequired": {
+        "description": "Der If-Match-Header mit der aktuellen Ressourcenversion fehlt.",
+        "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } }
+      }
+    },
+    "schemas": {
+      "CreateTenant": {
+        "type": "object", "additionalProperties": false,
+        "required": ["name", "default_locale", "default_timezone"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1, "maxLength": 200 },
+          "default_locale": { "type": "string", "minLength": 2, "maxLength": 35 },
+          "default_timezone": { "type": "string", "minLength": 1, "maxLength": 100 }
+        }
+      },
+      "UpdateTenant": {
+        "type": "object", "additionalProperties": false,
+        "required": ["name", "status", "default_locale", "default_timezone"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1, "maxLength": 200 },
+          "status": { "type": "string", "enum": ["active", "suspended", "archived"] },
+          "default_locale": { "type": "string", "minLength": 2, "maxLength": 35 },
+          "default_timezone": { "type": "string", "minLength": 1, "maxLength": 100 }
+        }
+      },
+      "Tenant": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "name", "status", "default_locale", "default_timezone", "version"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "name": { "type": "string" },
+          "status": { "type": "string", "enum": ["active", "suspended", "archived"] },
+          "default_locale": { "type": "string" },
+          "default_timezone": { "type": "string" },
+          "version": { "type": "integer", "minimum": 1 }
+        }
+      },
+      "TenantList": {
+        "type": "object", "additionalProperties": false, "required": ["items"],
+        "properties": { "items": { "type": "array", "items": { "$ref": "#/components/schemas/Tenant" }, "maxItems": 200 } }
+      },
+      "CreateOrganizationalUnit": {
+        "type": "object", "additionalProperties": false, "required": ["unit_type", "name"],
+        "properties": {
+          "parent_id": { "type": "string", "format": "uuid" },
+          "unit_type": { "type": "string", "pattern": "^[a-z](?:[a-z0-9._-]*[a-z0-9])?$", "maxLength": 64 },
+          "name": { "type": "string", "minLength": 1, "maxLength": 200 }
+        }
+      },
+      "UpdateOrganizationalUnit": {
+        "type": "object", "additionalProperties": false,
+        "required": ["unit_type", "name", "status"],
+        "properties": {
+          "parent_id": { "type": "string", "format": "uuid" },
+          "unit_type": { "type": "string", "pattern": "^[a-z](?:[a-z0-9._-]*[a-z0-9])?$", "maxLength": 64 },
+          "name": { "type": "string", "minLength": 1, "maxLength": 200 },
+          "status": { "type": "string", "enum": ["active", "archived"] }
+        }
+      },
+      "OrganizationalUnit": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "tenant_id", "unit_type", "name", "status", "version"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "tenant_id": { "type": "string", "format": "uuid" },
+          "parent_id": { "type": "string", "format": "uuid" },
+          "unit_type": { "type": "string" },
+          "name": { "type": "string" },
+          "status": { "type": "string", "enum": ["active", "archived"] },
+          "version": { "type": "integer", "minimum": 1 }
+        }
+      },
+      "OrganizationalUnitList": {
+        "type": "object", "additionalProperties": false, "required": ["items"],
+        "properties": { "items": { "type": "array", "items": { "$ref": "#/components/schemas/OrganizationalUnit" }, "maxItems": 500 } }
+      },
+      "SecurityAuditEvent": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "occurred_at", "event_type", "outcome", "request_id", "correlation_id"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "occurred_at": { "type": "string", "format": "date-time" },
+          "event_type": { "type": "string", "pattern": "^[a-z][a-z0-9-]*([.][a-z][a-z0-9-]*)+[.]v[1-9][0-9]*$", "maxLength": 256 },
+          "outcome": { "type": "string", "enum": ["succeeded", "denied", "failed"] },
+          "actor_account_id": { "type": "string", "format": "uuid" },
+          "actor_account_class": { "type": "string", "enum": ["work", "admin", "service"] },
+          "tenant_id": { "type": "string", "format": "uuid" },
+          "tenant_name": { "type": "string" },
+          "request_id": { "type": "string", "format": "uuid" },
+          "correlation_id": { "type": "string", "format": "uuid" }
+        }
+      },
+      "SecurityAuditPage": {
+        "type": "object", "additionalProperties": false, "required": ["items"],
+        "properties": {
+          "items": { "type": "array", "maxItems": 100, "items": { "$ref": "#/components/schemas/SecurityAuditEvent" } },
+          "next_cursor": { "type": "string", "minLength": 1, "maxLength": 512 }
+        }
+      },
+      "CreateWorkUser": {
+        "type": "object", "additionalProperties": false,
+        "required": ["tenant_id", "organizational_unit_id", "given_name", "family_name", "login_name", "temporary_password", "membership_type"],
+        "properties": {
+          "tenant_id": { "type": "string", "format": "uuid" },
+          "organizational_unit_id": { "type": "string", "format": "uuid" },
+          "given_name": { "type": "string", "minLength": 1, "maxLength": 120 },
+          "family_name": { "type": "string", "minLength": 1, "maxLength": 120 },
+          "login_name": { "type": "string", "minLength": 1, "maxLength": 320 },
+          "temporary_password": { "type": "string", "minLength": 12, "maxLength": 1024 },
+          "membership_type": { "type": "string", "pattern": "^[a-z][a-z0-9._-]*$", "maxLength": 64 }
+        }
+      },
+      "WorkUser": {
+        "type": "object", "additionalProperties": false,
+        "required": ["account_id", "party_id", "tenant_id", "login_name", "must_change_password"],
+        "properties": {
+          "account_id": { "type": "string", "format": "uuid" },
+          "party_id": { "type": "string", "format": "uuid" },
+          "tenant_id": { "type": "string", "format": "uuid" },
+          "login_name": { "type": "string" },
+          "must_change_password": { "type": "boolean", "const": true }
+        }
+      },
+      "WorkUserDirectoryEntry": {
+        "type": "object", "additionalProperties": false,
+        "required": ["account_id", "party_id", "tenant_id", "display_name", "login_name", "status", "must_change_password", "organizational_unit_id", "organizational_unit_name", "membership_type", "roles"],
+        "properties": {
+          "account_id": { "type": "string", "format": "uuid" },
+          "party_id": { "type": "string", "format": "uuid" },
+          "tenant_id": { "type": "string", "format": "uuid" },
+          "display_name": { "type": "string" },
+          "login_name": { "type": "string" },
+          "status": { "type": "string", "enum": ["active", "disabled", "locked"] },
+          "must_change_password": { "type": "boolean" },
+          "organizational_unit_id": { "type": "string" },
+          "organizational_unit_name": { "type": "string" },
+          "membership_type": { "type": "string" },
+          "roles": { "type": "array", "items": { "type": "string" } }
+        }
+      },
+      "WorkUserDirectory": {
+        "type": "object", "additionalProperties": false, "required": ["items"],
+        "properties": { "items": { "type": "array", "maxItems": 200, "items": { "$ref": "#/components/schemas/WorkUserDirectoryEntry" } } }
+      },
+      "WorkPermission": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "permission_key", "display_name", "owning_module", "risk_level"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "permission_key": { "type": "string", "pattern": "^[a-z][a-z0-9.-]+$" },
+          "display_name": { "type": "string" },
+          "owning_module": { "type": "string" },
+          "risk_level": { "type": "string", "enum": ["low", "medium", "high", "critical"] }
+        }
+      },
+      "WorkRole": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "tenant_id", "role_key", "display_name", "system_role", "status", "version", "assignment_count", "permissions"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "tenant_id": { "type": "string", "format": "uuid" },
+          "role_key": { "type": "string", "pattern": "^[a-z][a-z0-9.-]+$" },
+          "display_name": { "type": "string" },
+          "system_role": { "type": "boolean" },
+          "status": { "type": "string", "enum": ["active", "retired"] },
+          "version": { "type": "integer", "minimum": 1 },
+          "assignment_count": { "type": "integer", "minimum": 0 },
+          "permissions": { "type": "array", "items": { "$ref": "#/components/schemas/WorkPermission" } }
+        }
+      },
+      "WorkRoleCatalog": {
+        "type": "object", "additionalProperties": false, "required": ["roles", "permissions"],
+        "properties": {
+          "roles": { "type": "array", "maxItems": 200, "items": { "$ref": "#/components/schemas/WorkRole" } },
+          "permissions": { "type": "array", "maxItems": 500, "items": { "$ref": "#/components/schemas/WorkPermission" } }
+        }
+      },
+      "CreateWorkRole": {
+        "type": "object", "additionalProperties": false,
+        "required": ["tenant_id", "role_key", "display_name", "permission_keys"],
+        "properties": {
+          "tenant_id": { "type": "string", "format": "uuid" },
+          "role_key": { "type": "string", "pattern": "^[a-z][a-z0-9.-]+$", "maxLength": 120 },
+          "display_name": { "type": "string", "minLength": 1, "maxLength": 160 },
+          "permission_keys": { "type": "array", "minItems": 1, "maxItems": 100, "uniqueItems": true, "items": { "type": "string", "pattern": "^[a-z][a-z0-9.-]+$" } }
+        }
+      },
+      "UpdateWorkRole": {
+        "type": "object", "additionalProperties": false,
+        "required": ["tenant_id", "display_name", "status", "permission_keys"],
+        "properties": {
+          "tenant_id": { "type": "string", "format": "uuid" },
+          "display_name": { "type": "string", "minLength": 1, "maxLength": 160 },
+          "status": { "type": "string", "enum": ["active", "retired"] },
+          "permission_keys": { "type": "array", "minItems": 1, "maxItems": 100, "uniqueItems": true, "items": { "type": "string", "pattern": "^[a-z][a-z0-9.-]+$" } }
+        }
+      },
+      "ReplaceWorkUserRoles": {
+        "type": "object", "additionalProperties": false, "required": ["tenant_id", "role_ids"],
+        "properties": {
+          "tenant_id": { "type": "string", "format": "uuid" },
+          "role_ids": { "type": "array", "maxItems": 100, "uniqueItems": true, "items": { "type": "string", "format": "uuid" } }
+        }
+      },
+      "WorkUserRoleAssignment": {
+        "type": "object", "additionalProperties": false, "required": ["account_id", "role_keys"],
+        "properties": {
+          "account_id": { "type": "string", "format": "uuid" },
+          "role_keys": { "type": "array", "items": { "type": "string" } }
+        }
+      },
+      "DocumentClassification": {
+        "type": "object", "additionalProperties": false,
+        "required": ["revision", "level", "retention_class", "legal_hold"],
+        "properties": {
+          "revision": { "type": "integer", "minimum": 1 },
+          "level": { "type": "string", "enum": ["internal", "confidential", "restricted"] },
+          "retention_class": { "type": "string", "pattern": "^[a-z][a-z0-9.-]+$" },
+          "retention_until": { "type": "string", "format": "date-time" },
+          "legal_hold": { "type": "boolean" }
+        }
+      },
+      "DocumentVersion": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "version_number", "source", "published_at"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "version_number": { "type": "integer", "minimum": 1 },
+          "source": { "type": "string", "enum": ["upload", "import", "collaboration", "signature"] },
+          "published_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "DocumentSummary": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "title", "status", "source_module", "created_at", "updated_at", "version", "access_reason", "latest_version", "classification"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "title": { "type": "string", "minLength": 1, "maxLength": 240 },
+          "status": { "type": "string", "enum": ["active", "archived"] },
+          "source_module": { "type": "string", "pattern": "^[a-z][a-z0-9.-]+$" },
+          "created_at": { "type": "string", "format": "date-time" },
+          "updated_at": { "type": "string", "format": "date-time" },
+          "version": { "type": "integer", "minimum": 1 },
+          "access_reason": { "type": "string", "enum": ["created-by-me", "shared-directly-with-me"] },
+          "latest_version": { "$ref": "#/components/schemas/DocumentVersion" },
+          "classification": { "$ref": "#/components/schemas/DocumentClassification" }
+        }
+      },
+      "DocumentPage": {
+        "type": "object", "additionalProperties": false,
+        "required": ["visibility_scope", "items"],
+        "properties": {
+          "visibility_scope": { "type": "string", "const": "created-or-directly-shared-with-me" },
+          "items": { "type": "array", "maxItems": 100, "items": { "$ref": "#/components/schemas/DocumentSummary" } },
+          "next_cursor": { "type": "string", "minLength": 1, "maxLength": 512 }
+        }
+      },
+      "DocumentDetail": {
+        "type": "object", "additionalProperties": false,
+        "required": ["document", "versions"],
+        "properties": {
+          "document": { "$ref": "#/components/schemas/DocumentSummary" },
+          "versions": { "type": "array", "items": { "$ref": "#/components/schemas/DocumentVersion" } }
+        }
+      },
+      "WorkspaceTenant": {
+        "type": "object", "additionalProperties": false, "required": ["id", "name", "status"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "name": { "type": "string" },
+          "status": { "type": "string", "enum": ["active", "suspended", "archived"] }
+        }
+      },
+      "WorkspaceOrganizationalUnit": {
+        "type": "object", "additionalProperties": false, "required": ["id", "name", "unit_type"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "name": { "type": "string" },
+          "unit_type": { "type": "string" }
+        }
+      },
+      "WorkspaceOverview": {
+        "type": "object", "additionalProperties": false, "required": ["tenant", "organizational_path", "permission"],
+        "properties": {
+          "tenant": { "$ref": "#/components/schemas/WorkspaceTenant" },
+          "organizational_unit": { "$ref": "#/components/schemas/WorkspaceOrganizationalUnit" },
+          "organizational_path": {
+            "type": "array",
+            "description": "Aktive Organisationseinheiten vom obersten Kontext bis zur direkten Mitgliedschaft; ausschließlich serverseitig im Session-Tenant aufgelöst.",
+            "items": { "$ref": "#/components/schemas/WorkspaceOrganizationalUnit" }
+          },
+          "membership_type": { "type": "string" },
+          "permission": { "type": "string", "const": "core.workspace.access" }
+        }
+      },
+      "LoginRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["login_name", "password"],
+        "properties": {
+          "login_name": { "type": "string", "minLength": 1 },
+          "password": { "type": "string", "minLength": 1, "maxLength": 1024 }
+        }
+      },
+      "LoginResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["redirect"],
+        "properties": {
+          "redirect": { "type": "string", "enum": ["/app", "/admin", "/change-password", "/mfa", "/mfa-setup"] },
+          "mfa_required": { "type": "boolean" }
+        }
+      },
+      "MFACode": {
+        "type": "object", "additionalProperties": false, "required": ["code"],
+        "properties": { "code": { "type": "string", "minLength": 6, "maxLength": 32 } }
+      },
+      "TOTPEnrollmentRequest": {
+        "type": "object", "additionalProperties": false, "required": ["current_password", "display_name"],
+        "properties": {
+          "current_password": { "type": "string", "minLength": 1, "maxLength": 1024 },
+          "display_name": { "type": "string", "minLength": 1, "maxLength": 120 }
+        }
+      },
+      "TOTPEnrollment": {
+        "type": "object", "additionalProperties": false, "required": ["factor_id", "secret", "otpauth_uri", "qr_code_data_url"],
+        "properties": {
+          "factor_id": { "type": "string", "format": "uuid" },
+          "secret": { "type": "string" },
+          "otpauth_uri": { "type": "string", "pattern": "^otpauth://totp/" },
+          "qr_code_data_url": { "type": "string", "pattern": "^data:image/png;base64," }
+        }
+      },
+      "TOTPConfirmation": {
+        "type": "object", "additionalProperties": false, "required": ["factor_id", "code"],
+        "properties": {
+          "factor_id": { "type": "string", "format": "uuid" },
+          "code": { "type": "string", "pattern": "^[0-9]{6}$" }
+        }
+      },
+      "TOTPActivation": {
+        "type": "object", "additionalProperties": false, "required": ["recovery_codes"],
+        "properties": { "recovery_codes": { "type": "array", "minItems": 10, "maxItems": 10, "items": { "type": "string" } } }
+      },
+      "PasswordChange": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["current_password", "new_password"],
+        "properties": {
+          "current_password": { "type": "string", "minLength": 1, "maxLength": 1024 },
+          "new_password": { "type": "string", "minLength": 12, "maxLength": 1024 }
+        }
+      },
+      "Session": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["account_class", "audience", "profile", "home_path", "preferences", "must_change_password", "authentication_assurance", "mfa_enrollment_required", "expires_at"],
+        "properties": {
+          "account_class": { "type": "string", "enum": ["work", "admin"] },
+          "audience": { "type": "string", "enum": ["werk-work", "werk-admin"] },
+          "tenant_id": { "type": "string", "format": "uuid" },
+          "profile": { "$ref": "#/components/schemas/Profile" },
+          "home_path": { "type": "string", "enum": ["/app", "/admin"] },
+          "preferences": { "$ref": "#/components/schemas/Preferences" },
+          "must_change_password": { "type": "boolean" },
+          "authentication_assurance": { "type": "string", "enum": ["single-factor", "multi-factor"] },
+          "mfa_enrollment_required": { "type": "boolean" },
+          "expires_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "Profile": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["display_name", "login_name"],
+        "properties": {
+          "display_name": { "type": "string", "minLength": 1, "maxLength": 200 },
+          "login_name": { "type": "string", "minLength": 1 }
+        }
+      },
+      "Preferences": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["navigation_mode"],
+        "properties": {
+          "navigation_mode": { "type": "string", "enum": ["bar", "collapsed"] }
+        }
+      },
+      "Health": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["status"],
+        "properties": {
+          "status": { "type": "string", "enum": ["ok", "ready"] }
+        }
+      },
+      "Metadata": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["product", "service", "version", "api_version"],
+        "properties": {
+          "product": { "type": "string", "const": "WERK" },
+          "service": { "type": "string", "const": "werk-api" },
+          "version": { "type": "string" },
+          "api_version": { "type": "string", "const": "v1" }
+        }
+      },
+      "Problem": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["type", "title", "status", "detail", "instance", "code", "request_id", "correlation_id"],
+        "properties": {
+          "type": { "type": "string", "format": "uri" },
+          "title": { "type": "string" },
+          "status": { "type": "integer", "minimum": 400, "maximum": 599 },
+          "detail": { "type": "string" },
+          "instance": { "type": "string", "format": "uri" },
+          "code": { "type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$" },
+          "request_id": { "type": "string", "format": "uuid" },
+          "correlation_id": { "type": "string", "format": "uuid" }
+        }
+      }
+    }
+  }
+}

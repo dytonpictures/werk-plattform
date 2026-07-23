@@ -1,76 +1,320 @@
 name: werk
 
 services:
-  werk-postgres:
-    image: postgres:18.4-alpine
-    environment:
-      POSTGRES_DB: ${POSTGRES_DB:-werk}
-      POSTGRES_USER: ${POSTGRES_USER:-werk}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
-    volumes:
-      - werk-postgres-data:/var/lib/postgresql
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
-      interval: 5s
-      timeout: 3s
-      retries: 20
-    restart: unless-stopped
-    security_opt:
-      - no-new-privileges:true
-
-  werk-api:
-    build:
-      context: ./apps/api
-      args:
-        GO_VERSION: "1.26.1"
-    environment:
-      WERK_ENV: ${WERK_ENV:-development}
-      WERK_VERSION: ${WERK_VERSION:-0.1.0-dev}
-      WERK_HTTP_ADDR: :8080
-      WERK_DATABASE_URL: postgres://${POSTGRES_USER:-werk}:${POSTGRES_PASSWORD}@werk-postgres:5432/${POSTGRES_DB:-werk}?sslmode=disable
+  edge:
+    image: caddy:2-alpine
     ports:
-      - "${WERK_API_PORT:-127.0.0.1:8080}:8080"
+      - "${WERK_PORT:-3000}:80"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
     depends_on:
-      werk-postgres:
+      api:
+        condition: service_healthy
+      dashboard:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "/app/werk-api", "healthcheck"]
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/health/live"]
       interval: 10s
       timeout: 3s
-      retries: 10
-    restart: unless-stopped
+      retries: 6
+    networks:
+      - edge
     read_only: true
     tmpfs:
-      - /tmp
+      - /config
+      - /data
     security_opt:
       - no-new-privileges:true
+    restart: unless-stopped
 
-  werk-web:
+  dashboard:
+    build:
+      context: ./dashboard
+    environment:
+      WERK_DASHBOARD_ADDRESS: 0.0.0.0:3000
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/health/live"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+    networks:
+      - edge
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+  api:
     build:
       context: .
-      dockerfile: apps/web/Dockerfile
       args:
-        NODE_VERSION: "24.18.0"
+        SERVICE: api
     environment:
-      NODE_ENV: production
-      HOSTNAME: 0.0.0.0
-      WERK_INTERNAL_API_URL: ${WERK_INTERNAL_API_URL:-http://werk-api:8080}
-    ports:
-      - "${WERK_WEB_PORT:-3000}:3000"
+      WERK_ENV: ${WERK_ENV:-development}
+      WERK_BUILD_VERSION: ${WERK_BUILD_VERSION:-dev}
+      WERK_BOOTSTRAP_ADMIN_PASSWORD: ${WERK_BOOTSTRAP_ADMIN_PASSWORD:-}
+      WERK_DEV_WORKER_PASSWORD: ${WERK_DEV_WORKER_PASSWORD:-}
+      WERK_IDENTITY_MFA_ENABLED: ${WERK_IDENTITY_MFA_ENABLED:-true}
+      WERK_IDENTITY_MFA_KEY: ${WERK_IDENTITY_MFA_KEY:-MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY}
+      WERK_ALLOWED_ORIGINS: ${WERK_ALLOWED_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
+      DATABASE_URL: postgres://werk_work_runtime:${POSTGRES_WORK_PASSWORD:-werk-work-dev}@postgres:5432/werk?sslmode=disable
+      IDENTITY_DATABASE_URL: postgres://werk_identity_runtime:${POSTGRES_IDENTITY_PASSWORD:-werk-identity-dev}@postgres:5432/werk?sslmode=disable
+      ADMIN_DATABASE_URL: postgres://werk_admin_runtime:${POSTGRES_ADMIN_PASSWORD:-werk-admin-dev}@postgres:5432/werk?sslmode=disable
+      WERK_KAFKA_ENABLED: ${WERK_KAFKA_ENABLED:-true}
+      WERK_KAFKA_BROKERS: ${WERK_KAFKA_BROKERS:-kafka:19092}
+      WERK_KAFKA_CLIENT_ID: ${WERK_KAFKA_API_CLIENT_ID:-platform-api}
+      WERK_KAFKA_DOMAIN_EVENTS_TOPIC: ${WERK_KAFKA_DOMAIN_EVENTS_TOPIC:-platform.domain-events.v1}
+      WERK_KAFKA_SECURITY_AUDIT_TOPIC: ${WERK_KAFKA_SECURITY_AUDIT_TOPIC:-platform.security-audit.v1}
+      WERK_KAFKA_RUNTIME_LOGS_TOPIC: ${WERK_KAFKA_RUNTIME_LOGS_TOPIC:-platform.runtime-logs.v1}
+      WERK_KAFKA_TLS: ${WERK_KAFKA_TLS:-false}
+      WERK_KAFKA_SASL_MECHANISM: ${WERK_KAFKA_SASL_MECHANISM:-none}
+      WERK_KAFKA_SASL_USERNAME: ${WERK_KAFKA_SASL_USERNAME:-}
+      WERK_KAFKA_SASL_PASSWORD: ${WERK_KAFKA_SASL_PASSWORD:-}
     depends_on:
-      werk-api:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      kafka-init:
+        condition: service_completed_successfully
     healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1:3000/api/health"]
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/health/ready"]
       interval: 10s
       timeout: 3s
-      retries: 10
-    restart: unless-stopped
+      retries: 6
+    networks:
+      - edge
+      - data
     read_only: true
     tmpfs:
       - /tmp
+    cap_drop:
+      - ALL
     security_opt:
       - no-new-privileges:true
+    stop_grace_period: 25s
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      args:
+        SERVICE: worker
+    environment:
+      WERK_ENV: ${WERK_ENV:-development}
+      WERK_BUILD_VERSION: ${WERK_BUILD_VERSION:-dev}
+      WERK_WORKER_CONCURRENCY: ${WERK_WORKER_CONCURRENCY:-4}
+      DATABASE_URL: postgres://werk_worker_runtime:${POSTGRES_WORKER_PASSWORD:-werk-worker-dev}@postgres:5432/werk?sslmode=disable
+      WERK_KAFKA_ENABLED: ${WERK_KAFKA_ENABLED:-true}
+      WERK_KAFKA_BROKERS: ${WERK_KAFKA_BROKERS:-kafka:19092}
+      WERK_KAFKA_CLIENT_ID: ${WERK_KAFKA_WORKER_CLIENT_ID:-platform-worker}
+      WERK_KAFKA_DOMAIN_EVENTS_TOPIC: ${WERK_KAFKA_DOMAIN_EVENTS_TOPIC:-platform.domain-events.v1}
+      WERK_KAFKA_SECURITY_AUDIT_TOPIC: ${WERK_KAFKA_SECURITY_AUDIT_TOPIC:-platform.security-audit.v1}
+      WERK_KAFKA_RUNTIME_LOGS_TOPIC: ${WERK_KAFKA_RUNTIME_LOGS_TOPIC:-platform.runtime-logs.v1}
+      WERK_KAFKA_AUDIT_CONCURRENCY: ${WERK_KAFKA_AUDIT_CONCURRENCY:-1}
+      WERK_KAFKA_TLS: ${WERK_KAFKA_TLS:-false}
+      WERK_KAFKA_SASL_MECHANISM: ${WERK_KAFKA_SASL_MECHANISM:-none}
+      WERK_KAFKA_SASL_USERNAME: ${WERK_KAFKA_SASL_USERNAME:-}
+      WERK_KAFKA_SASL_PASSWORD: ${WERK_KAFKA_SASL_PASSWORD:-}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      kafka-init:
+        condition: service_completed_successfully
+    networks:
+      - data
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+  migrate:
+    build:
+      context: .
+      args:
+        SERVICE: migrate
+    environment:
+      WERK_ENV: ${WERK_ENV:-development}
+      DATABASE_URL: postgres://werk_migrator:${POSTGRES_MIGRATOR_PASSWORD:-werk-migrator-dev}@postgres:5432/werk?sslmode=disable
+    depends_on:
+      database-roles:
+        condition: service_completed_successfully
+    networks:
+      - data
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: "no"
+
+  database-roles:
+    image: postgres:18-alpine
+    environment:
+      PGHOST: postgres
+      PGPORT: 5432
+      PGDATABASE: werk
+      PGUSER: werk
+      PGPASSWORD: ${POSTGRES_PASSWORD:-werk}
+      WERK_ENV: ${WERK_ENV:-development}
+      WERK_DB_NAME: werk
+      WERK_MIGRATOR_PASSWORD: ${POSTGRES_MIGRATOR_PASSWORD:-werk-migrator-dev}
+      WERK_WORK_PASSWORD: ${POSTGRES_WORK_PASSWORD:-werk-work-dev}
+      WERK_IDENTITY_PASSWORD: ${POSTGRES_IDENTITY_PASSWORD:-werk-identity-dev}
+      WERK_ADMIN_PASSWORD: ${POSTGRES_ADMIN_PASSWORD:-werk-admin-dev}
+      WERK_SERVICE_PASSWORD: ${POSTGRES_SERVICE_PASSWORD:-werk-service-dev}
+      WERK_WORKER_PASSWORD: ${POSTGRES_WORKER_PASSWORD:-werk-worker-dev}
+      WERK_BACKUP_PASSWORD: ${POSTGRES_BACKUP_PASSWORD:-werk-backup-dev}
+    command: ["sh", "/bootstrap/bootstrap-roles.sh"]
+    volumes:
+      - ./deploy/postgres:/bootstrap:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - data
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: "no"
+
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_DB: werk
+      POSTGRES_USER: werk
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-werk}
+    volumes:
+      - werk-postgres:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U werk -d werk"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - data
+    restart: unless-stopped
+
+  valkey:
+    image: valkey/valkey:8-alpine
+    command: ["valkey-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+    networks:
+      - data
+    restart: unless-stopped
+
+  kafka-storage-init:
+    image: apache/kafka:4.3.1
+    user: "0:0"
+    network_mode: "none"
+    entrypoint: ["/bin/sh", "-ec"]
+    command: ["chown -R 1000:1000 /var/lib/kafka/data"]
+    volumes:
+      - platform-kafka:/var/lib/kafka/data
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+    security_opt:
+      - no-new-privileges:true
+    restart: "no"
+
+  kafka:
+    image: apache/kafka:4.3.1
+    hostname: kafka
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT,HOST:PLAINTEXT
+      KAFKA_LISTENERS: CONTROLLER://:29093,INTERNAL://:19092,HOST://:9092
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:19092,HOST://localhost:${WERK_DEV_KAFKA_PORT:-59092}
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:29093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_SHARE_COORDINATOR_STATE_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_SHARE_COORDINATOR_STATE_TOPIC_MIN_ISR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      KAFKA_LOG4J_ROOT_LOGLEVEL: WARN
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+    volumes:
+      - platform-kafka:/var/lib/kafka/data
+    depends_on:
+      kafka-storage-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server 127.0.0.1:19092 >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    networks:
+      - data
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+  kafka-init:
+    image: apache/kafka:4.3.1
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092 --create --if-not-exists \
+          --topic "$${DOMAIN_TOPIC}" --partitions 6 --replication-factor 1 \
+          --config cleanup.policy=delete --config retention.ms="$${DOMAIN_RETENTION_MS}" \
+          --config max.message.bytes=2097152
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092 --create --if-not-exists \
+          --topic "$${AUDIT_TOPIC}" --partitions 3 --replication-factor 1 \
+          --config cleanup.policy=delete --config retention.ms="$${AUDIT_RETENTION_MS}" \
+          --config max.message.bytes=2097152
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092 --create --if-not-exists \
+          --topic "$${LOGS_TOPIC}" --partitions 6 --replication-factor 1 \
+          --config cleanup.policy=delete --config retention.ms="$${LOGS_RETENTION_MS}" \
+          --config max.message.bytes=524288
+    environment:
+      DOMAIN_TOPIC: ${WERK_KAFKA_DOMAIN_EVENTS_TOPIC:-platform.domain-events.v1}
+      AUDIT_TOPIC: ${WERK_KAFKA_SECURITY_AUDIT_TOPIC:-platform.security-audit.v1}
+      LOGS_TOPIC: ${WERK_KAFKA_RUNTIME_LOGS_TOPIC:-platform.runtime-logs.v1}
+      DOMAIN_RETENTION_MS: ${WERK_KAFKA_DOMAIN_RETENTION_MS:-604800000}
+      AUDIT_RETENTION_MS: ${WERK_KAFKA_AUDIT_RETENTION_MS:-2592000000}
+      LOGS_RETENTION_MS: ${WERK_KAFKA_LOGS_RETENTION_MS:-604800000}
+    depends_on:
+      kafka:
+        condition: service_healthy
+    networks:
+      - data
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: "no"
+
+networks:
+  edge:
+  data:
+    internal: true
 
 volumes:
-  werk-postgres-data:
+  werk-postgres:
+  platform-kafka:

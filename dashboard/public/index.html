@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="de" data-density="cozy">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="WERK – gemeinsame Anmeldung zur selbst gehosteten Unternehmensplattform."
+    />
+    <title>WERK · Anmeldung</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#login-card">Direkt zur Anmeldung</a>
+
+    <div class="login-shell">
+      <div class="login-background" aria-hidden="true">
+        <div class="login-grid"></div>
+        <div class="login-halo"></div>
+      </div>
+
+      <header class="login-header">
+        <a class="brand" href="/" aria-label="WERK Startseite">
+          <span class="brand-mark" aria-hidden="true">
+            <span class="brand-mark-dot"></span>
+          </span>
+          <span class="brand-name">WERK</span>
+          <span class="brand-separator" aria-hidden="true"></span>
+          <span class="brand-tag">Unternehmensplattform</span>
+        </a>
+
+        <div class="platform-status" role="status" aria-live="polite">
+          <span class="status-dot" data-status-dot></span>
+          <span data-platform-status>Verbindung wird geprüft</span>
+        </div>
+      </header>
+
+      <main class="login-card" id="login-card">
+        <p class="login-kicker">Sicherer Zugang</p>
+
+        <div class="login-heading">
+          <h1>Willkommen bei WERK</h1>
+          <p>Melden Sie sich an, um auf Ihre WERK-Instanz zuzugreifen.</p>
+        </div>
+
+        <form class="login-form" data-login-form>
+          <label class="form-field" for="login-email">
+            <span>E-Mail oder Benutzername</span>
+            <input
+              id="login-email"
+              name="login_name"
+              type="text"
+              autocomplete="username"
+              placeholder="name@unternehmen.de"
+              required
+              autofocus
+            />
+          </label>
+
+          <label class="form-field" for="login-password">
+            <span>Passwort</span>
+            <input
+              id="login-password"
+              name="password"
+              type="password"
+              autocomplete="current-password"
+              placeholder="Passwort"
+              required
+            />
+          </label>
+
+          <div class="development-note" data-login-state>
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="12" cy="12" r="9" />
+              <path d="M12 10v6M12 7.25v.25" />
+            </svg>
+            <p>
+              Ihre Zugangsdaten werden ausschließlich an die lokale WERK-Instanz
+              übertragen.
+            </p>
+          </div>
+
+          <p class="form-notice" data-login-notice role="status" hidden></p>
+
+          <button class="button button-primary login-submit" type="submit">
+            Anmelden
+          </button>
+        </form>
+
+        <button class="button button-secondary logout-button" data-logout type="button" hidden>
+          Abmelden
+        </button>
+
+        <p class="routing-note">
+          Der passende Bereich wird nach der sicheren Anmeldung automatisch aus
+          dem Konto bestimmt.
+        </p>
+      </main>
+
+      <footer class="login-footer">
+        <span class="mono">WERK · DEV</span>
+        <span aria-hidden="true">·</span>
+        <span>Self-hosted</span>
+        <span aria-hidden="true">·</span>
+        <span>Entwicklungsinstanz</span>
+      </footer>
+    </div>
+  </body>
+</html>

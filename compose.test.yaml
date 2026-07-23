@@ -1,0 +1,29 @@
+services:
+  integration:
+    build:
+      context: .
+      target: test
+      args:
+        SERVICE: api
+    command: ["./internal/platform/database", "./internal/platform/identitystore", "./internal/platform/adminstore", "./internal/platform/workspacestore", "./internal/platform/documentstore", "./internal/platform/auditstore", "./internal/platform/kafkastream", "-run", "Integration", "-count=1"]
+    environment:
+      WERK_TEST_MIGRATOR_DATABASE_URL: postgres://werk_migrator:${POSTGRES_MIGRATOR_PASSWORD:-werk-migrator-dev}@postgres:5432/werk?sslmode=disable
+      WERK_TEST_WORK_DATABASE_URL: postgres://werk_work_runtime:${POSTGRES_WORK_PASSWORD:-werk-work-dev}@postgres:5432/werk?sslmode=disable
+      WERK_TEST_SERVICE_DATABASE_URL: postgres://werk_service_runtime:${POSTGRES_SERVICE_PASSWORD:-werk-service-dev}@postgres:5432/werk?sslmode=disable
+      WERK_TEST_WORKER_DATABASE_URL: postgres://werk_worker_runtime:${POSTGRES_WORKER_PASSWORD:-werk-worker-dev}@postgres:5432/werk?sslmode=disable
+      WERK_TEST_BACKUP_DATABASE_URL: postgres://werk_backup:${POSTGRES_BACKUP_PASSWORD:-werk-backup-dev}@postgres:5432/werk?sslmode=disable
+      WERK_TEST_IDENTITY_DATABASE_URL: postgres://werk_identity_runtime:${POSTGRES_IDENTITY_PASSWORD:-werk-identity-dev}@postgres:5432/werk?sslmode=disable
+      WERK_TEST_ADMIN_DATABASE_URL: postgres://werk_admin_runtime:${POSTGRES_ADMIN_PASSWORD:-werk-admin-dev}@postgres:5432/werk?sslmode=disable
+      WERK_TEST_KAFKA_BROKERS: kafka:19092
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      kafka-init:
+        condition: service_completed_successfully
+    networks:
+      - data
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: "no"

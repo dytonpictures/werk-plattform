@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="de" data-density="cozy">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>WERK · Mein Profil</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <script src="/session.js" defer></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main-content">Direkt zum Profil</a>
+    <div class="workspace-shell" data-authenticated-page="/profile">
+      <header class="workspace-header">
+        <a class="brand" data-profile-home href="/"><span class="brand-mark"><span class="brand-mark-dot"></span></span><span class="brand-name">WERK</span><span class="brand-separator"></span><span>Identität</span></a>
+        <div class="workspace-actions"><a class="button" data-profile-back href="/">Zurück</a><details class="profile-menu"><summary aria-label="Profilmenü öffnen"><span class="profile-menu-avatar" data-profile-initials>W</span><span class="profile-menu-label"><strong data-profile-name>Profil</strong><small data-profile-account-class>Konto</small></span><span class="profile-menu-chevron" aria-hidden="true">⌄</span></summary><div class="profile-menu-popover"><div class="profile-menu-identity"><strong data-profile-name>Profil wird geladen</strong><span data-profile-login>—</span></div><div class="profile-menu-separator"></div><a data-profile-home href="/">Startbereich</a><button data-page-logout type="button">Abmelden</button></div></details></div>
+      </header>
+      <div class="global-layout">
+        <nav class="global-navigation" data-global-navigation aria-label="Globale Navigation"></nav>
+        <main class="workspace-main profile-main" id="main-content" tabindex="-1">
+        <p class="login-kicker">Core Identity</p>
+        <h1>Mein Profil</h1>
+        <p>Ihre Identität wird serverseitig aus der aktuellen WERK-Session aufgelöst.</p>
+        <section class="workspace-panel profile-card">
+          <div class="profile-avatar" data-profile-initials>W</div>
+          <div><h2 data-profile-name>Profil wird geladen</h2><p data-profile-login>—</p><span class="phase-badge" data-profile-account-class>Kontoart</span></div>
+        </section>
+        <section class="profile-grid" aria-label="Identitätsdetails">
+          <article class="workspace-panel profile-detail"><span>Anmeldename</span><strong data-profile-login>—</strong><small>Über Core Identity verwaltet</small></article>
+          <article class="workspace-panel profile-detail"><span>Mandantenbindung</span><strong class="mono" data-profile-tenant>—</strong><small>Wird nicht vom Browser gewählt</small></article>
+          <article class="workspace-panel profile-detail"><span>Session gültig bis</span><strong data-profile-expires>—</strong><small>HttpOnly und bereichsgebunden</small></article>
+        </section>
+        <section class="workspace-panel security-panel"><div><h2>Sicherheit</h2><p>Passwortwechsel und Session-Widerruf werden bereits durch Core Identity geschützt. MFA ist vorbereitet, aber noch nicht aktiv.</p></div><span class="core-status"><span class="status-dot is-ready"></span>Session geschützt</span></section>
+        <p class="form-notice" data-page-notice hidden></p>
+        </main>
+      </div>
+    </div>
+  </body>
+</html>

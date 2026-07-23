@@ -1,0 +1,105 @@
+#!/bin/sh
+set -eu
+set -o pipefail
+
+umask 077
+
+fail() {
+  echo "$1" >&2
+  exit 2
+}
+
+require_database_environment() {
+  : "${PGHOST:?PGHOST is required}"
+  : "${PGDATABASE:?PGDATABASE is required}"
+  : "${PGUSER:?PGUSER is required}"
+  : "${PGPASSWORD:?PGPASSWORD is required}"
+}
+
+assert_database_session() {
+  expected_role="$1"
+  require_database_environment
+
+  server_version_num="$(psql -XAtq --set=ON_ERROR_STOP=1 --command='SHOW server_version_num')"
+  case "${server_version_num}" in
+    18????) ;;
+    *) fail "backup and restore require PostgreSQL server major version 18" ;;
+  esac
+
+  session_role="$(psql -XAtq --set=ON_ERROR_STOP=1 --command='SELECT session_user')"
+  if [ "${session_role}" != "${expected_role}" ]; then
+    fail "database session uses an unexpected role"
+  fi
+}
+
+backup() {
+  : "${WERK_BACKUP_RECIPIENT:?WERK_BACKUP_RECIPIENT is required}"
+  assert_database_session werk_backup
+
+  pg_dump \
+    --dbname="${PGDATABASE}" \
+    --format=custom \
+    --no-owner \
+    --serializable-deferrable \
+    --lock-wait-timeout=30000 \
+    --role=werk_backup_reader \
+  | age --encrypt --recipient "${WERK_BACKUP_RECIPIENT}"
+}
+
+restore() {
+  : "${WERK_RESTORE_IDENTITY_FILE:?WERK_RESTORE_IDENTITY_FILE is required}"
+  : "${WERK_RESTORE_CONFIRM:?WERK_RESTORE_CONFIRM is required}"
+  if [ ! -r "${WERK_RESTORE_IDENTITY_FILE}" ]; then
+    fail "restore identity is not readable"
+  fi
+  if [ "${WERK_RESTORE_CONFIRM}" != "restore:${PGDATABASE:-}" ]; then
+    fail "restore confirmation does not match the target database"
+  fi
+
+  assert_database_session werk_migrator
+
+  target_relation_count="$(psql -XAtq --set=ON_ERROR_STOP=1 --command="
+    SELECT count(*)
+    FROM pg_catalog.pg_class AS relation
+    JOIN pg_catalog.pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+    WHERE namespace.nspname <> 'information_schema'
+      AND namespace.nspname NOT LIKE 'pg_%'
+      AND relation.relkind IN ('r', 'p', 'S', 'v', 'm', 'f')
+  ")"
+  if [ "${target_relation_count}" != "0" ]; then
+    fail "restore target is not empty"
+  fi
+
+  age --decrypt --identity "${WERK_RESTORE_IDENTITY_FILE}" \
+  | pg_restore \
+      --dbname="${PGDATABASE}" \
+      --role=werk_owner \
+      --clean \
+      --if-exists \
+      --no-owner \
+      --single-transaction \
+      --exit-on-error
+}
+
+usage() {
+  echo "usage: werk-backup {backup|restore|keygen|recipient}" >&2
+  exit 2
+}
+
+case "${1:-}" in
+  backup)
+    backup
+    ;;
+  restore)
+    restore
+    ;;
+  keygen)
+    exec age-keygen
+    ;;
+  recipient)
+    exec age-keygen -y /dev/stdin
+    ;;
+  *)
+    usage
+    ;;
+esac

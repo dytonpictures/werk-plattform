@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="de" data-density="cozy">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>WERK · Arbeitsbereich</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <script src="/session.js" defer></script>
+    <script src="/work.js" defer></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main-content">Direkt zum Arbeitsbereich</a>
+    <div class="workspace-shell" data-authenticated-page="/app">
+      <header class="workspace-header">
+        <a class="brand" href="/app"><span class="brand-mark"><span class="brand-mark-dot"></span></span><span class="brand-name">WERK</span><span class="brand-separator"></span><span data-account-class>Arbeitsbereich</span></a>
+        <label class="workspace-search"><span class="visually-hidden">WERK durchsuchen</span><input type="search" placeholder="WERK durchsuchen …" disabled /><span class="search-shortcut">⌘ K</span></label>
+        <div class="workspace-actions"><span class="tenant-badge" data-tenant-label>Mandant wird geladen</span><details class="profile-menu"><summary aria-label="Profilmenü öffnen"><span class="profile-menu-avatar" data-profile-initials>W</span><span class="profile-menu-label"><strong data-profile-name>Profil</strong><small data-profile-account-class>Konto</small></span><span class="profile-menu-chevron" aria-hidden="true">⌄</span></summary><div class="profile-menu-popover"><div class="profile-menu-identity"><strong data-profile-name>Profil wird geladen</strong><span data-profile-login>—</span></div><div class="profile-menu-separator"></div><a href="/profile">Mein Profil</a><button data-page-logout type="button">Abmelden</button></div></details></div>
+      </header>
+      <div class="global-layout">
+        <nav class="global-navigation" data-global-navigation aria-label="Globale Navigation"></nav>
+        <main class="workspace-main workspace-dashboard" id="main-content" tabindex="-1" data-workspace-root aria-busy="true">
+          <p class="form-notice workspace-page-notice" data-page-notice role="status" hidden></p>
+          <div class="workspace-title-row"><div><p class="login-kicker">Mein Arbeitsbereich</p><h1>Guten Tag, <span data-profile-name>WERK Nutzer</span></h1><p><span data-workspace-tenant-name>Arbeitskontext wird geladen</span><span data-workspace-unit-context></span></p></div><span class="core-status" data-workspace-state role="status" aria-live="polite"><span class="status-dot"></span><span data-workspace-state-label>Zugriff wird geprüft</span></span></div>
+
+          <section class="workspace-context-grid" aria-label="Aktiver Arbeitskontext">
+            <article class="workspace-context-card"><span class="workspace-context-icon" aria-hidden="true">M</span><div><small>Mandant</small><strong data-workspace-tenant-name>Wird geladen</strong><span data-workspace-tenant-status>Serverseitiger Kontext</span></div></article>
+            <article class="workspace-context-card"><span class="workspace-context-icon" aria-hidden="true">O</span><div><small>Organisationseinheit</small><strong data-workspace-unit-name>Wird geladen</strong><span data-workspace-unit-type>Aktive Mitgliedschaft</span></div></article>
+            <article class="workspace-context-card"><span class="workspace-context-icon is-security" aria-hidden="true">✓</span><div><small>Workspace-Zugriff</small><strong data-workspace-access>Wird geprüft</strong><span>Durch Core Authorization bestätigt</span></div></article>
+          </section>
+
+          <div class="workspace-columns workspace-overview-columns">
+            <section class="workspace-panel workspace-launchpad">
+              <div class="panel-heading"><div><p class="admin-breadcrumb">Arbeitsmodule</p><h2>Ihr zentraler Einstieg</h2><p>Gemeinsame Core-Fähigkeiten werden hier ohne doppelte Fachstrukturen gebündelt.</p></div></div>
+              <div class="workspace-module-list">
+                <article><span class="workspace-module-icon" aria-hidden="true">E</span><div><strong>Inbox</strong><p>Hinweise, Freigaben und systemweite Benachrichtigungen.</p></div><span class="status-badge">Geplant</span></article>
+                <article><span class="workspace-module-icon" aria-hidden="true">A</span><div><strong>Meine Aufgaben</strong><p>Persönliche Arbeit aus Vorgängen und Workflows.</p></div><span class="status-badge">Phase 3</span></article>
+                <a class="workspace-module-entry" href="/documents"><span class="workspace-module-icon" aria-hidden="true">D</span><span><strong>Dokumente</strong><span>Versionierte Unterlagen mit Klassifikation und Aufbewahrung.</span></span><span class="status-badge">Vorschau</span></a>
+              </div>
+            </section>
+
+            <aside class="workspace-panel workspace-context-panel">
+              <div class="panel-heading"><div><p class="admin-breadcrumb">Sitzungskontext</p><h2>Meine Zuordnung</h2><p>Der Mandant wird aus der Work-Session übernommen und kann hier nicht gewechselt werden.</p></div></div>
+              <dl class="workspace-context-details">
+                <div><dt>Mitgliedschaft</dt><dd data-workspace-membership>—</dd></div>
+                <div><dt>Organisationspfad</dt><dd><ol class="workspace-organization-path" data-workspace-organization-path aria-label="Organisationspfad"><li>Wird geladen</li></ol></dd></div>
+                <div><dt>Berechtigung</dt><dd><code data-workspace-permission>—</code></dd></div>
+                <div><dt>Mandantenkennung</dt><dd><code data-workspace-tenant-id>—</code></dd></div>
+              </dl>
+              <a class="button button-secondary workspace-profile-link" href="/profile">Profil und Einstellungen</a>
+            </aside>
+          </div>
+
+          <section class="workspace-panel platform-foundation"><div><span class="foundation-mark">W</span></div><div><h2>Plattformkern einsatzbereit</h2><p>Core Identity, Tenant-Isolation, Rollenprüfung und der benutzerseitige Workspace-Vertrag sind aktiv. Die nächsten Phasen ergänzen gemeinsame Objekte, Ereignisse und Arbeitsabläufe.</p></div><span class="phase-badge">Phase 1</span></section>
+        </main>
+      </div>
+    </div>
+  </body>
+</html>

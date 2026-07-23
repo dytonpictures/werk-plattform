@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="de" data-density="cozy">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>WERK · Dokumente</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <script src="/session.js" defer></script>
+    <script src="/documents.js" defer></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main-content">Direkt zu den Dokumenten</a>
+    <div class="workspace-shell" data-authenticated-page="/app">
+      <header class="workspace-header">
+        <a class="brand" href="/app"><span class="brand-mark"><span class="brand-mark-dot"></span></span><span class="brand-name">WERK</span><span class="brand-separator"></span><span data-account-class>Arbeitsbereich</span></a>
+        <label class="workspace-search"><span class="visually-hidden">WERK durchsuchen</span><input type="search" placeholder="WERK durchsuchen …" disabled /><span class="search-shortcut">⌘ K</span></label>
+        <div class="workspace-actions"><span class="tenant-badge" data-tenant-label>Mandant wird geladen</span><details class="profile-menu"><summary aria-label="Profilmenü öffnen"><span class="profile-menu-avatar" data-profile-initials>W</span><span class="profile-menu-label"><strong data-profile-name>Profil</strong><small data-profile-account-class>Konto</small></span><span class="profile-menu-chevron" aria-hidden="true">⌄</span></summary><div class="profile-menu-popover"><div class="profile-menu-identity"><strong data-profile-name>Profil wird geladen</strong><span data-profile-login>—</span></div><div class="profile-menu-separator"></div><a href="/profile">Mein Profil</a><button data-page-logout type="button">Abmelden</button></div></details></div>
+      </header>
+      <div class="global-layout">
+        <nav class="global-navigation" data-global-navigation aria-label="Globale Navigation"></nav>
+        <main class="workspace-main documents-main" id="main-content" tabindex="-1" data-documents-root aria-busy="true">
+          <p class="form-notice workspace-page-notice" data-page-notice role="status" hidden></p>
+
+          <header class="documents-page-header">
+            <div>
+              <p class="login-kicker">Core Documents</p>
+              <h1>Dokumente</h1>
+              <p>Veröffentlichte Unterlagen, Klassifikation und unveränderliche Versionsstände an einem ruhigen Arbeitsort.</p>
+            </div>
+            <div class="documents-scope-card" aria-label="Aktive Dokumentansicht">
+              <span class="documents-scope-icon" aria-hidden="true">D</span>
+              <span><strong>Eigene und geteilte Dokumente</strong><small>Serverseitig auf direkte Sichtbarkeit begrenzt</small></span>
+            </div>
+          </header>
+
+          <section class="documents-filter-panel" aria-labelledby="documents-filter-title">
+            <div class="documents-filter-heading">
+              <div><p class="admin-breadcrumb">Metadatenansicht</p><h2 id="documents-filter-title">Suchen und eingrenzen</h2></div>
+              <span class="documents-result-count" data-documents-result-count aria-live="polite">Dokumente werden geladen</span>
+            </div>
+            <form class="documents-filter-form" data-documents-filter-form>
+              <label class="documents-search-field"><span>Titel</span><span class="documents-input-wrap"><span aria-hidden="true">⌕</span><input type="search" name="q" maxlength="120" autocomplete="off" placeholder="Dokumenttitel durchsuchen" /></span></label>
+              <label><span>Status</span><select name="status"><option value="active">Aktiv</option><option value="archived">Archiviert</option></select></label>
+              <label><span>Klassifikation</span><select name="classification"><option value="">Alle Stufen</option><option value="internal">Intern</option><option value="confidential">Vertraulich</option><option value="restricted">Streng vertraulich</option></select></label>
+              <label><span>Zugriff</span><select name="access"><option value="">Alle sichtbaren</option><option value="created-by-me">Von mir erstellt</option><option value="shared-directly-with-me">Direkt mit mir geteilt</option></select></label>
+              <div class="documents-filter-actions"><button class="button button-primary" type="submit">Anwenden</button><button class="button button-secondary" type="button" data-documents-filter-reset>Zurücksetzen</button></div>
+            </form>
+          </section>
+
+          <div class="documents-layout">
+            <section class="documents-list-panel" aria-labelledby="documents-list-title">
+              <div class="documents-panel-heading"><div><p class="admin-breadcrumb">Meine Dokumentansicht</p><h2 id="documents-list-title">Sichtbare Dokumente</h2></div><span class="status-badge">Leseansicht</span></div>
+              <ol class="documents-list" data-documents-list aria-live="polite"><li class="documents-list-loading"><span></span><span></span><span></span></li></ol>
+              <div class="documents-empty-state" data-documents-empty hidden><span class="documents-empty-mark" aria-hidden="true">D</span><h3>Noch keine sichtbaren Dokumente</h3><p>Eigene und direkt mit Ihnen geteilte Dokumente erscheinen hier.</p></div>
+              <div class="documents-pagination"><button class="button button-secondary" type="button" data-documents-more hidden>Weitere Dokumente</button></div>
+            </section>
+
+            <p class="visually-hidden" data-documents-detail-status role="status" aria-live="polite" aria-atomic="true"></p>
+            <aside class="documents-detail-panel" data-documents-detail tabindex="-1" aria-labelledby="documents-detail-title" aria-busy="false">
+              <div class="documents-detail-empty">
+                <span class="documents-document-glyph" aria-hidden="true"><i></i><i></i><i></i></span>
+                <p class="admin-breadcrumb">Dokumentansicht</p>
+                <h2 id="documents-detail-title">Dokument auswählen</h2>
+                <p>Klassifikation, Aufbewahrung und veröffentlichte Versionen erscheinen hier. Dateiinhalte bleiben bis zum sicheren Transfervertrag getrennt.</p>
+              </div>
+            </aside>
+          </div>
+
+          <section class="documents-boundary-note" aria-label="Sicherheitsgrenze des Dokumentenbereichs">
+            <span class="documents-boundary-line" aria-hidden="true"></span>
+            <div><strong>Bewusst sicher vorbereitet</strong><p>Diese erste Stufe zeigt ausschließlich autorisierte Metadaten. Upload, Download, Providerpfade und Speicherzugänge werden erst mit Einmaltickets, Quarantäneprüfung und Restore-Nachweis freigeschaltet.</p></div>
+          </section>
+        </main>
+      </div>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,16 @@
+{
+	admin off
+}
+
+:80 {
+	encode zstd gzip
+
+	@api path /api/* /admin/* /service/* /health/* /meta
+	handle @api {
+		reverse_proxy api:8080
+	}
+
+	handle {
+		reverse_proxy dashboard:3000
+	}
+}

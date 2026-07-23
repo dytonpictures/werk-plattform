@@ -1,0 +1,79 @@
+services:
+  restore-postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_DB: werk_restore
+      POSTGRES_USER: werk
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-werk}
+    volumes:
+      - werk-restore-postgres:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U werk -d werk_restore"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+    networks:
+      - data
+    restart: "no"
+
+  restore-database-roles:
+    image: postgres:18-alpine
+    environment:
+      PGHOST: restore-postgres
+      PGPORT: 5432
+      PGDATABASE: werk_restore
+      PGUSER: werk
+      PGPASSWORD: ${POSTGRES_PASSWORD:-werk}
+      WERK_ENV: test
+      WERK_DB_NAME: werk_restore
+      WERK_MIGRATOR_PASSWORD: ${POSTGRES_MIGRATOR_PASSWORD:-werk-migrator-dev}
+      WERK_WORK_PASSWORD: ${POSTGRES_WORK_PASSWORD:-werk-work-dev}
+      WERK_IDENTITY_PASSWORD: ${POSTGRES_IDENTITY_PASSWORD:-werk-identity-dev}
+      WERK_ADMIN_PASSWORD: ${POSTGRES_ADMIN_PASSWORD:-werk-admin-dev}
+      WERK_SERVICE_PASSWORD: ${POSTGRES_SERVICE_PASSWORD:-werk-service-dev}
+      WERK_WORKER_PASSWORD: ${POSTGRES_WORKER_PASSWORD:-werk-worker-dev}
+      WERK_BACKUP_PASSWORD: ${POSTGRES_BACKUP_PASSWORD:-werk-backup-dev}
+    command: ["sh", "/bootstrap/bootstrap-roles.sh"]
+    volumes:
+      - ./deploy/postgres:/bootstrap:ro
+    depends_on:
+      restore-postgres:
+        condition: service_healthy
+    networks:
+      - data
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: "no"
+
+  restore:
+    environment:
+      PGHOST: restore-postgres
+      PGDATABASE: werk_restore
+
+  integration-restore:
+    build:
+      context: .
+      target: test
+      args:
+        SERVICE: api
+    command: ["./internal/platform/database", "-run", "Integration", "-count=1"]
+    environment:
+      WERK_TEST_MIGRATOR_DATABASE_URL: postgres://werk_migrator:${POSTGRES_MIGRATOR_PASSWORD:-werk-migrator-dev}@restore-postgres:5432/werk_restore?sslmode=disable
+      WERK_TEST_WORK_DATABASE_URL: postgres://werk_work_runtime:${POSTGRES_WORK_PASSWORD:-werk-work-dev}@restore-postgres:5432/werk_restore?sslmode=disable
+      WERK_TEST_WORKER_DATABASE_URL: postgres://werk_worker_runtime:${POSTGRES_WORKER_PASSWORD:-werk-worker-dev}@restore-postgres:5432/werk_restore?sslmode=disable
+      WERK_TEST_BACKUP_DATABASE_URL: postgres://werk_backup:${POSTGRES_BACKUP_PASSWORD:-werk-backup-dev}@restore-postgres:5432/werk_restore?sslmode=disable
+    networks:
+      - data
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: "no"
+
+volumes:
+  werk-restore-postgres:

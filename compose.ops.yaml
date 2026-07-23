@@ -1,0 +1,52 @@
+services:
+  backup:
+    image: werk-backup:${WERK_BUILD_VERSION:-dev}
+    pull_policy: never
+    build:
+      context: .
+      dockerfile: deploy/backup/Dockerfile
+    profiles: [operations]
+    environment:
+      PGHOST: postgres
+      PGPORT: 5432
+      PGDATABASE: werk
+      PGUSER: werk_backup
+      PGPASSWORD: ${POSTGRES_BACKUP_PASSWORD:-werk-backup-dev}
+      PGCONNECT_TIMEOUT: 10
+      WERK_BACKUP_RECIPIENT: ${WERK_BACKUP_RECIPIENT:-}
+    command: ["backup"]
+    networks:
+      - data
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: "no"
+
+  restore:
+    image: werk-backup:${WERK_BUILD_VERSION:-dev}
+    pull_policy: never
+    profiles: [operations]
+    environment:
+      PGHOST: postgres
+      PGPORT: 5432
+      PGDATABASE: werk
+      PGUSER: werk_migrator
+      PGPASSWORD: ${POSTGRES_MIGRATOR_PASSWORD:-werk-migrator-dev}
+      PGCONNECT_TIMEOUT: 10
+      WERK_RESTORE_IDENTITY_FILE: /run/secrets/werk-backup-identity
+      WERK_RESTORE_CONFIRM: ${WERK_RESTORE_CONFIRM:-}
+    command: ["restore"]
+    networks:
+      - data
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: "no"

@@ -1,89 +1,107 @@
-.DEFAULT_GOAL := help
-COMPOSE := docker compose
+GO_PACKAGES := ./...
+GO ?= go
+GOFMT ?= gofmt
+NODE ?= node
+TEST_COUNT ?= 20
 
-.PHONY: help doctor setup bootstrap up down restart ps logs build lint format test test-unit test-integration test-e2e migrate migrate-status seed bootstrap-admin set-admin-password health backup restore audit-check clean reset-dev-data
+.PHONY: fmt fmt-check vet test test-fast test-focus test-repeat check-native check build compose-config compose-build up down logs \
+	migration-test integration-test backup restore restore-test dev dev-apps dev-infra dev-db-roles \
+	dev-infra-status dev-infra-logs dev-migrate dev-api dev-worker \
+	dev-dashboard dev-down
 
-help: ## Verfügbare Befehle anzeigen
-	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z0-9_-]+:.*## / {printf "  %-22s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
+fmt:
+	$(GOFMT) -w cmd internal
 
-doctor: ## Lokale Voraussetzungen prüfen
-	@./scripts/doctor.sh
+fmt-check:
+	@files="$$($(GOFMT) -l cmd internal)"; if [ -n "$$files" ]; then echo "Go files need formatting:"; echo "$$files"; exit 1; fi
 
-setup: ## Lokale .env sicher vorbereiten
-	@./scripts/bootstrap.sh --env-only
+vet:
+	$(GO) vet $(GO_PACKAGES)
 
-bootstrap: ## Umgebung vorbereiten, bauen und starten
-	@./scripts/bootstrap.sh
+test: test-fast
 
-up: ## Dienste starten
-	$(COMPOSE) up -d --build
+test-fast:
+	$(GO) test $(GO_PACKAGES)
 
-down: ## Dienste ohne Datenverlust stoppen
-	$(COMPOSE) down
+test-focus:
+	@if [ -z "$(PKG)" ]; then echo "PKG is required, for example: make test-focus PKG=./internal/platform/sync"; exit 2; fi
+	$(GO) test $(PKG) -count=1
 
-restart: ## Dienste neu starten
-	$(COMPOSE) restart
+test-repeat:
+	@if [ -z "$(PKG)" ]; then echo "PKG is required, for example: make test-repeat PKG=./internal/platform/sync TEST_COUNT=20"; exit 2; fi
+	$(GO) test $(PKG) -count=$(TEST_COUNT)
 
-ps: ## Dienststatus anzeigen
-	$(COMPOSE) ps
+check-native: fmt-check vet test-fast build
 
-logs: ## Dienstlogs verfolgen
-	$(COMPOSE) logs -f --tail=200
+check: check-native compose-config
 
-build: ## Backend und Frontend bauen
-	$(COMPOSE) build
+build:
+	$(GO) build $(GO_PACKAGES)
 
-lint: ## Statische Prüfungen ausführen
-	docker run --rm -v "$(CURDIR)/apps/api:/src" -w /src golang:1.26.1-alpine go vet ./...
-	docker run --rm -v "$(CURDIR):/workspace" -w /workspace node:24.18.0-alpine npm run lint
-	docker run --rm -v "$(CURDIR):/workspace" -w /workspace node:24.18.0-alpine npm run typecheck
+compose-config:
+	docker compose config --quiet
+	docker compose -f compose.yaml -f compose.dev.yaml config --quiet
+	docker compose -f compose.yaml -f compose.ops.yaml config --quiet
+	docker compose -f compose.yaml -f compose.test.yaml -f compose.ops.yaml -f compose.backup-test.yaml config --quiet
+	WERK_BUILD_VERSION=0.0.0 docker compose -f compose.yaml -f compose.release.yaml config --quiet
+	WERK_BUILD_VERSION=0.0.0 docker compose -f compose.yaml -f compose.ops.yaml -f compose.release.yaml -f compose.release.ops.yaml config --quiet
 
-format: ## Go-Code formatieren
-	docker run --rm -v "$(CURDIR)/apps/api:/src" -w /src golang:1.26.1-alpine gofmt -w .
+compose-build:
+	docker compose build
+	docker compose -f compose.yaml -f compose.ops.yaml build backup
 
-test: test-unit ## Alle derzeit vorhandenen Tests ausführen
+up:
+	docker compose up --build -d
 
-test-unit: ## Unit-Tests ausführen
-	docker run --rm -v "$(CURDIR)/apps/api:/src" -w /src golang:1.26.1-alpine go test ./...
-	docker run --rm -v "$(CURDIR):/workspace" -w /workspace node:24.18.0-alpine npm test
+down:
+	docker compose down
 
-test-integration: ## Integrationstests ausführen
-	@echo "Noch keine Integrationstests implementiert."
+logs:
+	docker compose logs -f
 
-test-e2e: ## E2E-Tests ausführen
-	@echo "Noch keine E2E-Tests implementiert."
+migration-test: integration-test
 
-migrate: ## Datenbankmigrationen anwenden
-	$(COMPOSE) run --rm werk-api migrate
+integration-test:
+	sh scripts/integration-test.sh
 
-migrate-status: ## Migrationsstatus anzeigen
-	@echo "Statusprüfung folgt mit dem Migrationsframework."
+backup:
+	bash scripts/backup.sh
 
-seed: ## Idempotente Systemdaten erzeugen
-	@echo "Seeds folgen mit dem Identity-Modul."
+restore:
+	bash scripts/restore.sh
 
-bootstrap-admin: ## Ersten Administrator anlegen
-	@test -n "$(WERK_BOOTSTRAP_EMAIL)" -a -n "$(WERK_BOOTSTRAP_PASSWORD)" || (echo "WERK_BOOTSTRAP_EMAIL und WERK_BOOTSTRAP_PASSWORD setzen"; exit 2)
-	$(COMPOSE) run --rm -e WERK_BOOTSTRAP_EMAIL="$(WERK_BOOTSTRAP_EMAIL)" -e WERK_BOOTSTRAP_PASSWORD="$(WERK_BOOTSTRAP_PASSWORD)" werk-api bootstrap-admin
+restore-test:
+	bash scripts/backup-restore-test.sh
 
-set-admin-password: ## Administratorpasswort sicher ändern
-	@echo "Passwortverwaltung folgt mit dem Identity-Modul."
+dev:
+	GO="$(GO)" NODE="$(NODE)" bash scripts/dev.sh
 
-health: ## Health- und Readiness-Endpunkte prüfen
-	@./scripts/wait-for-health.sh
+dev-apps:
+	GO="$(GO)" NODE="$(NODE)" WERK_DEV_SKIP_INFRA=1 bash scripts/dev.sh
 
-backup: ## PostgreSQL sichern
-	@./scripts/backup.sh
+dev-infra:
+	bash scripts/dev-infra.sh up
 
-restore: ## PostgreSQL wiederherstellen
-	@./scripts/restore.sh
+dev-db-roles:
+	bash scripts/dev-infra.sh roles
 
-audit-check: ## Audit-Konfiguration prüfen
-	@echo "Auditprüfung folgt mit dem Audit-Modul."
+dev-infra-status:
+	bash scripts/dev-infra.sh status
 
-clean: ## Flüchtige Build-Ausgaben löschen, keine Geschäftsdaten
-	rm -rf apps/web/.next coverage
+dev-infra-logs:
+	bash scripts/dev-infra.sh logs
 
-reset-dev-data: ## Entwicklungsdaten nach expliziter Bestätigung löschen
-	@test "$(CONFIRM)" = "yes" || (echo "Abbruch: CONFIRM=yes erforderlich"; exit 1)
-	$(COMPOSE) down -v
+dev-migrate:
+	GO="$(GO)" bash scripts/dev-service.sh migrate
+
+dev-api:
+	GO="$(GO)" bash scripts/dev-service.sh api
+
+dev-worker:
+	GO="$(GO)" bash scripts/dev-service.sh worker
+
+dev-dashboard:
+	NODE="$(NODE)" bash scripts/dev-service.sh dashboard
+
+dev-down:
+	bash scripts/dev-infra.sh down
