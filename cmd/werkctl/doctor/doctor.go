@@ -612,12 +612,5 @@ func (prober *runtimeProber) CheckKafka(ctx context.Context, configuration confi
 		return err
 	}
 	defer client.Close()
-	if err := client.Ping(ctx); err != nil {
-		return err
-	}
-	return client.VerifyTopics(ctx,
-		configuration.DomainEventsTopic,
-		configuration.SecurityAuditTopic,
-		configuration.RuntimeLogsTopic,
-	)
+	return client.VerifyTopics(ctx)
 }

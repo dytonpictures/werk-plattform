@@ -14,7 +14,11 @@ const documentsState = {
   nextCursor: '',
   listRequest: 0,
   detailRequest: 0,
+  listController: null,
+  detailController: null,
 };
+const documentsDateFormatter = new Intl.DateTimeFormat('de-DE', { dateStyle: 'medium' });
+const documentsDateTimeFormatter = new Intl.DateTimeFormat('de-DE', { dateStyle: 'medium', timeStyle: 'short' });
 
 class DocumentsRequestError extends Error {
   constructor(status) {
@@ -57,13 +61,11 @@ function validAccessReason(value) {
 function formatDate(value, withTime = false) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return '—';
-  return new Intl.DateTimeFormat('de-DE', withTime
-    ? { dateStyle: 'medium', timeStyle: 'short' }
-    : { dateStyle: 'medium' }).format(date);
+  return (withTime ? documentsDateTimeFormatter : documentsDateFormatter).format(date);
 }
 
-async function fetchDocumentsJSON(url) {
-  const response = await fetch(url, { headers: { Accept: 'application/json' }, credentials: 'same-origin' });
+async function fetchDocumentsJSON(url, signal) {
+  const response = await fetch(url, { headers: { Accept: 'application/json' }, credentials: 'same-origin', signal });
   if (response.status === 401) {
     redirectToSignIn();
     throw new DocumentsRequestError(response.status);
@@ -102,6 +104,8 @@ function announceDocumentDetail(message) {
 }
 
 function redirectToSignIn() {
+  documentsState.listController?.abort();
+  documentsState.detailController?.abort();
   documentsState.listRequest += 1;
   documentsState.detailRequest += 1;
   documentsState.items = [];
@@ -265,20 +269,23 @@ function renderDocumentDetailError(message, retry) {
 
 async function selectDocument(documentID, moveFocus = false) {
   const requestVersion = ++documentsState.detailRequest;
+  documentsState.detailController?.abort();
+  const controller = new AbortController();
+  documentsState.detailController = controller;
   documentsState.selectedId = documentID;
   renderDocumentsList();
   documentsDetail?.setAttribute('aria-busy', 'true');
   renderDocumentPlaceholder('Dokument wird geladen', 'Klassifikation und Versionshistorie werden serverseitig geprüft.');
   announceDocumentDetail('Dokumentdetails werden geladen.');
   try {
-    const payload = await fetchDocumentsJSON(`/api/v1/documents/${encodeURIComponent(documentID)}`);
+    const payload = await fetchDocumentsJSON(`/api/v1/documents/${encodeURIComponent(documentID)}`, controller.signal);
     if (requestVersion !== documentsState.detailRequest || documentsState.selectedId !== documentID) return;
     if (!renderDocumentDetail(payload)) throw new DocumentsRequestError(502);
     const selected = payload?.document?.title || 'Dokument';
     announceDocumentDetail(`${selected}: Dokumentdetails geladen.`);
     if (moveFocus) documentsDetail?.focus({ preventScroll: true });
   } catch (error) {
-    if (requestVersion !== documentsState.detailRequest || error.status === 401) return;
+    if (requestVersion !== documentsState.detailRequest || error.name === 'AbortError' || error.status === 401) return;
     if (error.status === 404) {
       documentsState.items = documentsState.items.filter((item) => item.id !== documentID);
       documentsState.selectedId = '';
@@ -290,6 +297,7 @@ async function selectDocument(documentID, moveFocus = false) {
       announceDocumentDetail('Dokumentdetails konnten nicht geladen werden.');
     }
   } finally {
+    if (documentsState.detailController === controller) documentsState.detailController = null;
     if (requestVersion === documentsState.detailRequest) documentsDetail?.setAttribute('aria-busy', 'false');
   }
 }
@@ -323,10 +331,14 @@ function renderListFailure(status) {
 async function loadDocuments({ append = false } = {}) {
   if (append && (documentsMore?.disabled || !documentsState.nextCursor)) return;
   const requestVersion = ++documentsState.listRequest;
+  documentsState.listController?.abort();
+  const controller = new AbortController();
+  documentsState.listController = controller;
   const cursor = append ? documentsState.nextCursor : '';
   setDocumentsBusy(true);
   if (documentsMore) documentsMore.disabled = true;
   if (!append) {
+    documentsState.detailController?.abort();
     documentsState.detailRequest += 1;
     documentsState.items = [];
     documentsState.nextCursor = '';
@@ -335,7 +347,7 @@ async function loadDocuments({ append = false } = {}) {
     documentsEmpty?.setAttribute('hidden', '');
   }
   try {
-    const page = await fetchDocumentsJSON(documentListURL(cursor));
+    const page = await fetchDocumentsJSON(documentListURL(cursor), controller.signal);
     if (requestVersion !== documentsState.listRequest) return;
     if (page.visibility_scope !== 'created-or-directly-shared-with-me' || !Array.isArray(page.items) ||
         page.items.some((item) => !validAccessReason(item?.access_reason))) throw new DocumentsRequestError(502);
@@ -350,9 +362,10 @@ async function loadDocuments({ append = false } = {}) {
     documentsMore?.toggleAttribute('hidden', !documentsState.nextCursor);
     if (!append && documentsState.items.length) await selectDocument(documentsState.items[0].id, false);
   } catch (error) {
-    if (requestVersion !== documentsState.listRequest || error.status === 401) return;
+    if (requestVersion !== documentsState.listRequest || error.name === 'AbortError' || error.status === 401) return;
     renderListFailure(error.status || 0);
   } finally {
+    if (documentsState.listController === controller) documentsState.listController = null;
     if (requestVersion === documentsState.listRequest) {
       setDocumentsBusy(false);
       if (documentsMore) documentsMore.disabled = false;

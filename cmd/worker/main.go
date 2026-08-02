@@ -24,6 +24,7 @@ const (
 	workerHeartbeatInterval       = 10 * time.Second
 	workerHeartbeatExpiry         = 30 * time.Second
 	workerHeartbeatAttemptTimeout = 5 * time.Second
+	kafkaObservationInterval      = 30 * time.Second
 )
 
 type heartbeatUpdater interface {
@@ -55,9 +56,12 @@ func main() {
 		os.Exit(1)
 	}
 	registry := outbox.NewRegistry()
+	asyncWakeups := make(chan struct{}, 1)
 	var outboxRuntime *outbox.Runtime
 	var auditRuntime *auditexport.Runtime
 	var kafkaClient *kafkastream.Client
+	var kafkaObservedAt time.Time
+	var kafkaObservedFailures uint64
 	var logSink *kafkastream.LogSink
 	if cfg.Kafka.Enabled {
 		kafkaClient, err = kafkastream.NewClient(cfg.Kafka)
@@ -66,25 +70,15 @@ func main() {
 			os.Exit(1)
 		}
 		checkContext, cancel := context.WithTimeout(context.Background(), cfg.Kafka.PublishTimeout)
-		err = kafkaClient.Ping(checkContext)
-		cancel()
-		if err != nil {
-			logger.Error("Kafka is unavailable", "error", err)
-			kafkaClient.Close()
-			os.Exit(1)
-		}
-		checkContext, cancel = context.WithTimeout(context.Background(), cfg.Kafka.PublishTimeout)
-		err = kafkaClient.VerifyTopics(checkContext,
-			cfg.Kafka.DomainEventsTopic,
-			cfg.Kafka.SecurityAuditTopic,
-			cfg.Kafka.RuntimeLogsTopic,
-		)
+		err = kafkaClient.VerifyTopics(checkContext)
 		cancel()
 		if err != nil {
 			logger.Error("Kafka topic contract is unavailable", "error", err)
 			kafkaClient.Close()
 			os.Exit(1)
 		}
+		kafkaObservedAt = time.Now()
+		kafkaObservedFailures = kafkaClient.PublishFailures()
 		exporter, exportErr := kafkastream.NewExporter(kafkaClient, cfg.Kafka)
 		if exportErr != nil {
 			logger.Error("Kafka exporter could not be created", "error", exportErr)
@@ -106,7 +100,7 @@ func main() {
 			Service: "worker", Environment: cfg.Environment,
 			BuildVersion: cfg.BuildVersion, InstanceID: workerID,
 		})
-		outboxRuntime, err = outbox.NewRuntime(store, registry, logger, workerID, cfg.WorkerConcurrency)
+		outboxRuntime, err = outbox.NewRuntime(store, registry, logger, workerID, cfg.WorkerConcurrency, asyncWakeups)
 		if err != nil {
 			logger.Error("outbox runtime could not be created", "error", err)
 			kafkaClient.Close()
@@ -118,7 +112,7 @@ func main() {
 			kafkaClient.Close()
 			os.Exit(1)
 		}
-		auditRuntime, err = auditexport.NewRuntime(auditStore, exporter, logger, workerID, cfg.Kafka.AuditConcurrency)
+		auditRuntime, err = auditexport.NewRuntime(auditStore, exporter, logger, workerID, cfg.Kafka.AuditConcurrency, asyncWakeups)
 		if err != nil {
 			logger.Error("security audit export runtime could not be created", "error", err)
 			kafkaClient.Close()
@@ -144,6 +138,23 @@ func main() {
 
 	signalContext, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	var listenerRuntime sync.WaitGroup
+	if cfg.Kafka.Enabled {
+		listenerRuntime.Add(1)
+		go func() {
+			defer listenerRuntime.Done()
+			for signalContext.Err() == nil {
+				if err := workerDatabase.ListenAsyncWork(signalContext, asyncWakeups); err != nil && signalContext.Err() == nil {
+					logger.WarnContext(signalContext, "async work listener failed; polling remains active", "error", err)
+				}
+				select {
+				case <-signalContext.Done():
+					return
+				case <-time.After(time.Second):
+				}
+			}
+		}()
+	}
 	var heartbeatRuntime sync.WaitGroup
 	heartbeatRuntime.Add(1)
 	go func() {
@@ -154,16 +165,15 @@ func main() {
 			if !cfg.Kafka.Enabled {
 				return operations.StateDisabled, nil
 			}
-			if err := kafkaClient.Ping(ctx); err != nil {
+			publishFailures := kafkaClient.PublishFailures()
+			if publishFailures == kafkaObservedFailures && time.Since(kafkaObservedAt) < kafkaObservationInterval {
+				return operations.StateReady, nil
+			}
+			if err := kafkaClient.VerifyTopics(ctx); err != nil {
 				return operations.StateDegraded, err
 			}
-			if err := kafkaClient.VerifyTopics(ctx,
-				cfg.Kafka.DomainEventsTopic,
-				cfg.Kafka.SecurityAuditTopic,
-				cfg.Kafka.RuntimeLogsTopic,
-			); err != nil {
-				return operations.StateDegraded, err
-			}
+			kafkaObservedAt = time.Now()
+			kafkaObservedFailures = publishFailures
 			return operations.StateReady, nil
 		}, func(err error) {
 			logger.WarnContext(signalContext, "worker heartbeat update failed", "error", err)
@@ -187,6 +197,7 @@ func main() {
 		<-signalContext.Done()
 	}
 	heartbeatRuntime.Wait()
+	listenerRuntime.Wait()
 	removeHeartbeatContext, cancelRemoveHeartbeat := context.WithTimeout(context.Background(), workerHeartbeatAttemptTimeout)
 	if err := heartbeatWriter.Remove(removeHeartbeatContext); err != nil {
 		logger.Warn("worker heartbeat could not be withdrawn", "error", err)

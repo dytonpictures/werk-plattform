@@ -15,7 +15,11 @@ import (
 )
 
 const (
+	// Runtime logs are explicitly loss-tolerant. At the maximum encoded record
+	// size the byte budget is authoritative, while the entry limit preserves
+	// capacity for ordinary small log bursts.
 	logQueueCapacity    = 2_048
+	logQueueByteBudget  = 64 << 20
 	maximumLogBodyBytes = 256 << 10
 )
 
@@ -43,6 +47,7 @@ type logEnvelope struct {
 
 type queuedLog struct {
 	message Message
+	bytes   int64
 }
 
 type LogSink struct {
@@ -56,6 +61,7 @@ type LogSink struct {
 	stateMu  sync.RWMutex
 	closed   bool
 	dropped  atomic.Uint64
+	queued   atomic.Int64
 	stopOnce sync.Once
 }
 
@@ -89,6 +95,7 @@ func (sink *LogSink) run() {
 }
 
 func (sink *LogSink) publish(ctx context.Context, record queuedLog) {
+	defer sink.queued.Add(-record.bytes)
 	if err := sink.writer.Publish(ctx, record.message); err != nil {
 		sink.dropped.Add(1)
 	}
@@ -111,7 +118,8 @@ func (sink *LogSink) drain(ctx context.Context) {
 func (sink *LogSink) discardQueued() {
 	for {
 		select {
-		case <-sink.queue:
+		case record := <-sink.queue:
+			sink.queued.Add(-record.bytes)
 			sink.dropped.Add(1)
 		default:
 			return
@@ -148,12 +156,29 @@ func (sink *LogSink) Dropped() uint64 {
 	return sink.dropped.Load()
 }
 
+// QueuedEntries and QueuedBytes expose bounded, low-cardinality process state
+// for metrics. Bytes include a record while it is being synchronously
+// published, so the reported budget cannot appear free prematurely.
+func (sink *LogSink) QueuedEntries() int {
+	if sink == nil {
+		return 0
+	}
+	return len(sink.queue)
+}
+
+func (sink *LogSink) QueuedBytes() int64 {
+	if sink == nil {
+		return 0
+	}
+	return sink.queued.Load()
+}
+
 type kafkaLogHandler struct {
 	base     slog.Handler
 	sink     *LogSink
 	metadata LogMetadata
 	attrs    []slog.Attr
-	groups   []string
+	group    string
 }
 
 func (handler *kafkaLogHandler) Enabled(ctx context.Context, level slog.Level) bool {
@@ -164,12 +189,16 @@ func (handler *kafkaLogHandler) Handle(ctx context.Context, record slog.Record) 
 	if err := handler.base.Handle(ctx, record); err != nil {
 		return err
 	}
-	attributes := make(map[string]any, len(handler.attrs)+record.NumAttrs())
+	attributeCount := len(handler.attrs) + record.NumAttrs()
+	var attributes map[string]any
+	if attributeCount > 0 {
+		attributes = make(map[string]any, attributeCount)
+	}
 	for _, attribute := range handler.attrs {
-		appendLogAttribute(attributes, handler.groups, attribute)
+		appendLogAttribute(attributes, handler.group, attribute)
 	}
 	record.Attrs(func(attribute slog.Attr) bool {
-		appendLogAttribute(attributes, handler.groups, attribute)
+		appendLogAttribute(attributes, handler.group, attribute)
 		return true
 	})
 	identifier, err := randomUUID()
@@ -206,18 +235,40 @@ func (handler *kafkaLogHandler) Handle(ctx context.Context, record slog.Record) 
 			"data-classification": tags[events.TagDataClassification],
 		},
 	}
+	messageBytes := int64(len(encoded))
 	handler.sink.stateMu.RLock()
 	if handler.sink.closed {
 		handler.sink.stateMu.RUnlock()
 		return nil
 	}
+	if !handler.sink.reserve(messageBytes) {
+		handler.sink.dropped.Add(1)
+		handler.sink.stateMu.RUnlock()
+		return nil
+	}
 	select {
-	case handler.sink.queue <- queuedLog{message: message}:
+	case handler.sink.queue <- queuedLog{message: message, bytes: messageBytes}:
 	default:
+		handler.sink.queued.Add(-messageBytes)
 		handler.sink.dropped.Add(1)
 	}
 	handler.sink.stateMu.RUnlock()
 	return nil
+}
+
+func (sink *LogSink) reserve(size int64) bool {
+	if size <= 0 || size > logQueueByteBudget {
+		return false
+	}
+	for {
+		current := sink.queued.Load()
+		if current > logQueueByteBudget-size {
+			return false
+		}
+		if sink.queued.CompareAndSwap(current, current+size) {
+			return true
+		}
+	}
 }
 
 func (handler *kafkaLogHandler) WithAttrs(attributes []slog.Attr) slog.Handler {
@@ -230,15 +281,19 @@ func (handler *kafkaLogHandler) WithAttrs(attributes []slog.Attr) slog.Handler {
 func (handler *kafkaLogHandler) WithGroup(name string) slog.Handler {
 	clone := *handler
 	clone.base = handler.base.WithGroup(name)
-	clone.groups = append(append([]string(nil), handler.groups...), name)
+	if clone.group == "" {
+		clone.group = name
+	} else {
+		clone.group += "." + name
+	}
 	return &clone
 }
 
-func appendLogAttribute(target map[string]any, groups []string, attribute slog.Attr) {
+func appendLogAttribute(target map[string]any, group string, attribute slog.Attr) {
 	attribute.Value = attribute.Value.Resolve()
 	key := attribute.Key
-	if len(groups) > 0 {
-		key = strings.Join(append(append([]string(nil), groups...), key), ".")
+	if group != "" {
+		key = group + "." + key
 	}
 	if sensitiveLogKey(key) {
 		target[key] = "[REDACTED]"
@@ -266,7 +321,7 @@ func logValue(value slog.Value) any {
 	case slog.KindGroup:
 		group := make(map[string]any)
 		for _, attribute := range value.Group() {
-			appendLogAttribute(group, nil, attribute)
+			appendLogAttribute(group, "", attribute)
 		}
 		return group
 	case slog.KindAny:

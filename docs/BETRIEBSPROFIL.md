@@ -42,6 +42,13 @@ getrennt: `WORK_DATABASE_URL`, `IDENTITY_DATABASE_URL`, `ADMIN_DATABASE_URL`,
 `WORKER_DATABASE_URL` und `MIGRATOR_DATABASE_URL` verwenden verschiedene
 PostgreSQL-Rollen. Ein Bootstrap-Superuser ist kein Laufzeitcredential.
 
+Die Laufzeitpools verwenden ausgewogene Obergrenzen pro Prozess: Work und
+Worker standardmäßig 16, Identity, Admin und Service standardmäßig 8
+Verbindungen. Explizite pgx-URL-Parameter `pool_max_conns`, `pool_min_conns`,
+`pool_max_conn_lifetime`, `pool_max_conn_idle_time` und
+`pool_max_conn_lifetime_jitter` überschreiben die Defaults innerhalb validierter
+Grenzen. Ein fünfminütiger Lifetime-Jitter verhindert gebündelte Reconnects.
+
 ## Mindestbetrieb
 
 - Entwicklung ohne TLS bindet ausschließlich an Loopback.
@@ -72,9 +79,11 @@ oder fehlgeschlagene Logexporte ohne hochkardinale Labels. Domain-Event- und
 Audit-Rückstände werden unabhängig aus PostgreSQL in der administrativen
 Betriebsübersicht angezeigt.
 
-Der Worker erneuert zusätzlich alle zehn Sekunden eine minimierte, expierende
-Kafka-Beobachtung in PostgreSQL. Die Adminübersicht zeigt Kafka nur bei einer
-frischen erfolgreichen Broker- und Topic-Prüfung als `ready`; Prüffehler werden
+Der Worker erneuert alle zehn Sekunden eine minimierte, expierende
+Kafka-Beobachtung in PostgreSQL. Die stärkere Broker- und Topic-Metadatenprüfung
+läuft bei gesundem Transport höchstens alle 30 Sekunden; ein Publish-Fehler
+erzwingt beim nächsten Heartbeat sofort eine neue Prüfung. Die Adminübersicht
+zeigt Kafka nur bei einer frischen erfolgreichen Prüfung als `ready`; Prüffehler werden
 `degraded`, ein fehlender oder abgelaufener Worker wird `unknown`, und eine
 deaktivierte Konfiguration bleibt `disabled`. Brokeradressen, Topicnamen,
 Fehlertexte und Credentials werden nicht in der Beobachtung gespeichert. Der

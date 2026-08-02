@@ -2,14 +2,11 @@
 package webui
 
 import (
-	"bytes"
 	"embed"
 	"io/fs"
-	"mime"
 	"net/http"
 	"path"
 	"strings"
-	"time"
 )
 
 //go:embed public/*
@@ -71,15 +68,7 @@ func NewHandler(api http.Handler) http.Handler {
 			http.NotFound(writer, request)
 			return
 		}
-		contents, readErr := fs.ReadFile(publicFiles, filename)
-		if readErr != nil {
-			http.Error(writer, "web UI unavailable", http.StatusInternalServerError)
-			return
-		}
-		if contentType := mime.TypeByExtension(path.Ext(filename)); contentType != "" {
-			writer.Header().Set("Content-Type", contentType)
-		}
-		http.ServeContent(writer, request, filename, time.Time{}, bytes.NewReader(contents))
+		http.ServeFileFS(writer, request, publicFiles, filename)
 	})
 }
 

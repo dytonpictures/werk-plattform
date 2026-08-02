@@ -9,11 +9,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/dytonpictures/werk/internal/platform/database"
 	"github.com/dytonpictures/werk/internal/platform/kafkastream"
+	"github.com/dytonpictures/werk/internal/platform/runtimepoll"
 )
 
 var ErrNoAuditAvailable = errors.New("no security audit event available")
@@ -21,7 +21,15 @@ var ErrNoAuditAvailable = errors.New("no security audit event available")
 const (
 	leaseDuration      = 2 * time.Minute
 	maximumErrorLength = 2000
+	maximumIdlePoll    = 2 * time.Second
+	claimBatchSize     = 4
 )
+
+type Claim struct {
+	Record      kafkastream.AuditRecord
+	Attempts    int
+	MaxAttempts int
+}
 
 type Publisher interface {
 	PublishAudit(context.Context, kafkastream.AuditRecord) error
@@ -40,16 +48,25 @@ func NewStore(workerDatabase *database.WorkerDB) (*Store, error) {
 }
 
 func (store *Store) Claim(ctx context.Context, workerID string) (kafkastream.AuditRecord, int, int, error) {
-	if strings.TrimSpace(workerID) == "" || len(workerID) > 120 {
-		return kafkastream.AuditRecord{}, 0, 0, errors.New("worker ID is invalid")
+	claims, err := store.ClaimBatch(ctx, workerID, 1)
+	if err != nil {
+		return kafkastream.AuditRecord{}, 0, 0, err
 	}
-	var record kafkastream.AuditRecord
-	var accountID pgtype.UUID
-	var tenantID pgtype.UUID
-	var attempts int
-	var maxAttempts int
+	claim := claims[0]
+	return claim.Record, claim.Attempts, claim.MaxAttempts, nil
+}
+
+func (store *Store) ClaimBatch(ctx context.Context, workerID string, limit int) ([]Claim, error) {
+	if strings.TrimSpace(workerID) == "" || len(workerID) > 120 {
+		return nil, errors.New("worker ID is invalid")
+	}
+	if limit < 1 || limit > claimBatchSize {
+		return nil, errors.New("audit claim batch size is invalid")
+	}
+	claimedAt := store.now()
+	claims := make([]Claim, 0, limit)
 	err := store.database.WithinGlobalWrite(ctx, func(ctx context.Context, tx database.TenantTx) error {
-		return tx.QueryRow(ctx, `
+		rows, err := tx.Query(ctx, `
 			WITH candidate AS (
 				SELECT queue.audit_event_id
 				FROM werk_core.security_audit_export_queue AS queue
@@ -69,7 +86,7 @@ func (store *Store) Claim(ctx context.Context, workerID string) (kafkastream.Aud
 				)
 				ORDER BY queue.available_at, audit.occurred_at, audit.id
 				FOR UPDATE OF queue SKIP LOCKED
-				LIMIT 1
+				LIMIT $4
 			)
 			UPDATE werk_core.security_audit_export_queue AS queue
 			SET status = 'processing', attempts = attempts + 1,
@@ -80,27 +97,67 @@ func (store *Store) Claim(ctx context.Context, workerID string) (kafkastream.Aud
 			RETURNING audit.id, audit.occurred_at, audit.event_type, audit.outcome,
 				audit.account_id, audit.tenant_id, audit.request_id, audit.correlation_id,
 				queue.attempts, queue.max_attempts
-		`, store.now(), workerID, store.now().Add(leaseDuration)).Scan(
-			&record.ID, &record.OccurredAt, &record.EventType, &record.Outcome,
-			&accountID, &tenantID, &record.RequestID, &record.CorrelationID,
-			&attempts, &maxAttempts,
-		)
+		`, claimedAt, workerID, claimedAt.Add(leaseDuration), limit)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var claim Claim
+			var accountID pgtype.UUID
+			var tenantID pgtype.UUID
+			if err := rows.Scan(
+				&claim.Record.ID, &claim.Record.OccurredAt, &claim.Record.EventType, &claim.Record.Outcome,
+				&accountID, &tenantID, &claim.Record.RequestID, &claim.Record.CorrelationID,
+				&claim.Attempts, &claim.MaxAttempts,
+			); err != nil {
+				return err
+			}
+			if accountID.Valid {
+				value := accountID.Bytes
+				claim.Record.AccountID = &value
+			}
+			if tenantID.Valid {
+				value := tenantID.Bytes
+				claim.Record.TenantID = &value
+			}
+			claims = append(claims, claim)
+		}
+		return rows.Err()
 	})
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return kafkastream.AuditRecord{}, 0, 0, ErrNoAuditAvailable
+		return nil, err
+	}
+	if len(claims) == 0 {
+		return nil, ErrNoAuditAvailable
+	}
+	return claims, nil
+}
+
+func (store *Store) Release(ctx context.Context, claims []Claim, workerID string) error {
+	if len(claims) == 0 {
+		return nil
+	}
+	ids := make([]string, len(claims))
+	for index, claim := range claims {
+		ids[index] = uuidString(claim.Record.ID)
+	}
+	return store.database.WithinGlobalWrite(ctx, func(ctx context.Context, tx database.TenantTx) error {
+		command, err := tx.Exec(ctx, `
+			UPDATE werk_core.security_audit_export_queue
+			SET status = CASE WHEN attempts <= 1 THEN 'pending' ELSE 'retry' END,
+				attempts = GREATEST(attempts - 1, 0), available_at = $3,
+				lease_owner = NULL, lease_expires_at = NULL, last_error = NULL
+			WHERE audit_event_id = ANY($1::uuid[]) AND status = 'processing' AND lease_owner = $2
+		`, ids, workerID, store.now())
+		if err != nil {
+			return err
 		}
-		return kafkastream.AuditRecord{}, 0, 0, err
-	}
-	if accountID.Valid {
-		value := accountID.Bytes
-		record.AccountID = &value
-	}
-	if tenantID.Valid {
-		value := tenantID.Bytes
-		record.TenantID = &value
-	}
-	return record, attempts, maxAttempts, nil
+		if command.RowsAffected() != int64(len(ids)) {
+			return errors.New("audit batch release lost a lease")
+		}
+		return nil
+	})
 }
 
 func (store *Store) Complete(ctx context.Context, eventID [16]byte, workerID string) error {
@@ -150,16 +207,21 @@ type Runtime struct {
 	workerID    string
 	concurrency int
 	pollDelay   time.Duration
+	wakeups     <-chan struct{}
 }
 
-func NewRuntime(store *Store, publisher Publisher, logger *slog.Logger, workerID string, concurrency int) (*Runtime, error) {
+func NewRuntime(store *Store, publisher Publisher, logger *slog.Logger, workerID string, concurrency int, wakeups ...<-chan struct{}) (*Runtime, error) {
 	if store == nil || publisher == nil || logger == nil || strings.TrimSpace(workerID) == "" || concurrency < 1 || concurrency > 16 {
 		return nil, errors.New("invalid audit export runtime configuration")
 	}
-	return &Runtime{
+	runtime := &Runtime{
 		store: store, publisher: publisher, logger: logger,
 		workerID: workerID, concurrency: concurrency, pollDelay: 500 * time.Millisecond,
-	}, nil
+	}
+	if len(wakeups) > 0 {
+		runtime.wakeups = wakeups[0]
+	}
+	return runtime, nil
 }
 
 func (runtime *Runtime) Run(ctx context.Context) {
@@ -176,28 +238,49 @@ func (runtime *Runtime) Run(ctx context.Context) {
 
 func (runtime *Runtime) runSlot(ctx context.Context, slot int) {
 	workerID := fmt.Sprintf("%s-audit-%d", runtime.workerID, slot)
+	waiter := runtimepoll.NewWaiter(runtime.pollDelay, maximumIdlePoll, workerID)
+	defer waiter.Close()
 	for ctx.Err() == nil {
-		record, attempts, maxAttempts, err := runtime.store.Claim(ctx, workerID)
+		claims, err := runtime.store.ClaimBatch(ctx, workerID, claimBatchSize)
 		if err != nil {
-			if !errors.Is(err, ErrNoAuditAvailable) && ctx.Err() == nil {
+			idle := errors.Is(err, ErrNoAuditAvailable)
+			if !idle && ctx.Err() == nil {
 				runtime.logger.WarnContext(ctx, "security audit export claim failed", "worker", workerID, "error", err)
 			}
-			select {
-			case <-ctx.Done():
+			if !waiter.Wait(ctx, idle, runtime.wakeups) {
 				return
-			case <-time.After(runtime.pollDelay):
-				continue
-			}
-		}
-		if err = runtime.publisher.PublishAudit(ctx, record); err != nil {
-			if transitionErr := runtime.store.Fail(ctx, record.ID, workerID, attempts, maxAttempts, err); transitionErr != nil {
-				runtime.logger.ErrorContext(ctx, "security audit export failure transition failed", "error", transitionErr)
 			}
 			continue
 		}
-		if err := runtime.store.Complete(ctx, record.ID, workerID); err != nil {
-			runtime.logger.ErrorContext(ctx, "security audit export completion failed", "error", err)
+		waiter.Reset()
+		for index, claim := range claims {
+			if ctx.Err() != nil {
+				runtime.releaseClaims(claims[index:], workerID)
+				return
+			}
+			record := claim.Record
+			if err = runtime.publisher.PublishAudit(ctx, record); err != nil {
+				if ctx.Err() != nil {
+					runtime.releaseClaims(claims[index:], workerID)
+					return
+				}
+				if transitionErr := runtime.store.Fail(ctx, record.ID, workerID, claim.Attempts, claim.MaxAttempts, err); transitionErr != nil {
+					runtime.logger.ErrorContext(ctx, "security audit export failure transition failed", "error", transitionErr)
+				}
+				continue
+			}
+			if err := runtime.store.Complete(ctx, record.ID, workerID); err != nil {
+				runtime.logger.ErrorContext(ctx, "security audit export completion failed", "error", err)
+			}
 		}
+	}
+}
+
+func (runtime *Runtime) releaseClaims(claims []Claim, workerID string) {
+	releaseContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := runtime.store.Release(releaseContext, claims, workerID); err != nil {
+		runtime.logger.Error("audit shutdown claim release failed", "error", err)
 	}
 }
 

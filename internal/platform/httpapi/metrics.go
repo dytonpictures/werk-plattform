@@ -14,14 +14,18 @@ type httpMetrics struct {
 	buildVersion      string
 	startedAt         time.Time
 	runtimeLogDropped func() uint64
+	runtimeLogQueued  func() int
+	runtimeLogBytes   func() int64
+	databasePools     []DatabasePoolMetric
 	requests          atomic.Uint64
 	responses         [6]atomic.Uint64
 }
 
-func newHTTPMetrics(buildVersion string, runtimeLogDropped func() uint64) *httpMetrics {
+func newHTTPMetrics(buildVersion string, runtimeLogDropped func() uint64, runtimeLogQueued func() int, runtimeLogBytes func() int64, databasePools []DatabasePoolMetric) *httpMetrics {
 	return &httpMetrics{
 		buildVersion: buildVersion, startedAt: time.Now(),
-		runtimeLogDropped: runtimeLogDropped,
+		runtimeLogDropped: runtimeLogDropped, runtimeLogQueued: runtimeLogQueued,
+		runtimeLogBytes: runtimeLogBytes, databasePools: append([]DatabasePoolMetric(nil), databasePools...),
 	}
 }
 
@@ -65,6 +69,41 @@ func (metrics *httpMetrics) serveHTTP(writer http.ResponseWriter, _ *http.Reques
 	_, _ = fmt.Fprintf(writer, "# HELP werk_kafka_runtime_logs_dropped_total Runtime log records not exported to Kafka.\n")
 	_, _ = fmt.Fprintf(writer, "# TYPE werk_kafka_runtime_logs_dropped_total counter\n")
 	_, _ = fmt.Fprintf(writer, "werk_kafka_runtime_logs_dropped_total %d\n", dropped)
+	queued := 0
+	if metrics.runtimeLogQueued != nil {
+		queued = metrics.runtimeLogQueued()
+	}
+	queuedBytes := int64(0)
+	if metrics.runtimeLogBytes != nil {
+		queuedBytes = metrics.runtimeLogBytes()
+	}
+	_, _ = fmt.Fprintf(writer, "# HELP werk_kafka_runtime_log_queue_entries Runtime log records waiting for or currently in Kafka publication.\n")
+	_, _ = fmt.Fprintf(writer, "# TYPE werk_kafka_runtime_log_queue_entries gauge\n")
+	_, _ = fmt.Fprintf(writer, "werk_kafka_runtime_log_queue_entries %d\n", queued)
+	_, _ = fmt.Fprintf(writer, "# HELP werk_kafka_runtime_log_queue_bytes Encoded runtime log bytes waiting for or currently in Kafka publication.\n")
+	_, _ = fmt.Fprintf(writer, "# TYPE werk_kafka_runtime_log_queue_bytes gauge\n")
+	_, _ = fmt.Fprintf(writer, "werk_kafka_runtime_log_queue_bytes %d\n", queuedBytes)
+	metrics.writeDatabasePools(writer)
+}
+
+func (metrics *httpMetrics) writeDatabasePools(writer http.ResponseWriter) {
+	_, _ = fmt.Fprintln(writer, "# HELP werk_database_pool_connections PostgreSQL pool connections by fixed API role and state.")
+	_, _ = fmt.Fprintln(writer, "# TYPE werk_database_pool_connections gauge")
+	_, _ = fmt.Fprintln(writer, "# HELP werk_database_pool_acquire_wait_total Number of acquisitions that waited for a PostgreSQL connection.")
+	_, _ = fmt.Fprintln(writer, "# TYPE werk_database_pool_acquire_wait_total counter")
+	_, _ = fmt.Fprintln(writer, "# HELP werk_database_pool_acquire_wait_seconds_total Cumulative time waiting for PostgreSQL connections.")
+	_, _ = fmt.Fprintln(writer, "# TYPE werk_database_pool_acquire_wait_seconds_total counter")
+	for _, pool := range metrics.databasePools {
+		if pool.Snapshot == nil || (pool.Name != "work" && pool.Name != "identity" && pool.Name != "admin") {
+			continue
+		}
+		stats := pool.Snapshot()
+		for state, value := range map[string]int32{"max": stats.Max, "total": stats.Total, "acquired": stats.Acquired, "idle": stats.Idle, "constructing": stats.Constructing} {
+			_, _ = fmt.Fprintf(writer, "werk_database_pool_connections{pool=\"%s\",state=\"%s\"} %d\n", pool.Name, state, value)
+		}
+		_, _ = fmt.Fprintf(writer, "werk_database_pool_acquire_wait_total{pool=\"%s\"} %d\n", pool.Name, stats.AcquireWaits)
+		_, _ = fmt.Fprintf(writer, "werk_database_pool_acquire_wait_seconds_total{pool=\"%s\"} %f\n", pool.Name, stats.AcquireTime.Seconds())
+	}
 }
 
 func prometheusLabel(value string) string {

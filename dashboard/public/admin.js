@@ -59,6 +59,11 @@ let userLoadSequence = 0;
 let roleLoadSequence = 0;
 let auditLoadSequence = 0;
 const userPageSize = 25;
+const userCollator = new Intl.Collator('de', { sensitivity: 'base', numeric: true });
+const dateTimeFormatter = new Intl.DateTimeFormat('de-DE', { dateStyle: 'medium', timeStyle: 'short' });
+const timeFormatter = new Intl.DateTimeFormat('de-DE', { hour: '2-digit', minute: '2-digit' });
+const latestRequestControllers = new Map();
+let userSearchTimer = 0;
 
 function adminCSRFToken() {
   const prefix = 'werk_csrf=';
@@ -113,6 +118,17 @@ async function adminRequest(path, options = {}, reauthenticationAttempted = fals
     throw new Error(localizedProblems[payload.code] || payload.detail || 'Die Verwaltungsaktion ist fehlgeschlagen.');
   }
   return payload;
+}
+
+async function latestAdminRequest(key, path) {
+  latestRequestControllers.get(key)?.abort();
+  const controller = new AbortController();
+  latestRequestControllers.set(key, controller);
+  try {
+    return await adminRequest(path, { signal: controller.signal });
+  } finally {
+    if (latestRequestControllers.get(key) === controller) latestRequestControllers.delete(key);
+  }
 }
 
 function requiredArray(payload, key, context) {
@@ -238,7 +254,7 @@ function showInvitationResult(invitation, loginName) {
   if (!recipientEmail || Number.isNaN(expiresAt.getTime())) return false;
   activeInvitationURL = activationURL.href;
   invitationResultDialog.querySelector('[data-invitation-recipient]').textContent = recipientEmail;
-  invitationResultDialog.querySelector('[data-invitation-expires]').textContent = new Intl.DateTimeFormat('de-DE', { dateStyle: 'medium', timeStyle: 'short' }).format(expiresAt);
+  invitationResultDialog.querySelector('[data-invitation-expires]').textContent = dateTimeFormatter.format(expiresAt);
   invitationResultDialog.querySelector('[data-invitation-activation-url]').textContent = activeInvitationURL;
   const subject = 'Ihre Einladung zu WERK';
   const body = `Hallo,\n\nfür Ihr WERK-Arbeitskonto ${loginName} wurde ein einmaliger Aktivierungslink erstellt:\n\n${activeInvitationURL}\n\nLegen Sie darüber Ihr eigenes Passwort fest. WERK meldet Sie danach nicht automatisch an.`;
@@ -265,9 +281,12 @@ function showAdminView() {
     else link.removeAttribute('aria-current');
   });
   if (adminMFARecommendation) adminMFARecommendation.hidden = !(adminMFARecommended && view === 'providers');
-  if (view === 'organization' && selectedTenantID) loadUnits(selectedTenantID).catch((error) => showPageNotice(error.message, 'error'));
-  if (view === 'users' && selectedTenantID) Promise.all([loadUnits(selectedTenantID), loadUsers(selectedTenantID)]).catch((error) => showPageNotice(error.message, 'error'));
-  if (view === 'roles' && selectedTenantID) loadRoles(selectedTenantID).catch((error) => showPageNotice(error.message, 'error'));
+  if (view === 'organization' && selectedTenantID && loadedUnitTenantID !== selectedTenantID) loadUnits(selectedTenantID).catch((error) => showPageNotice(error.message, 'error'));
+  if (view === 'users' && selectedTenantID) Promise.all([
+    loadedUnitTenantID === selectedTenantID ? Promise.resolve() : loadUnits(selectedTenantID),
+    loadedUserTenantID === selectedTenantID ? Promise.resolve() : loadUsers(selectedTenantID),
+  ]).catch((error) => showPageNotice(error.message, 'error'));
+  if (view === 'roles' && selectedTenantID && loadedRoleTenantID !== selectedTenantID) loadRoles(selectedTenantID).catch((error) => showPageNotice(error.message, 'error'));
   if (view === 'audit') loadAuditEvents(true).catch((error) => showPageNotice(error.message, 'error'));
   if (view === 'providers') loadIdentityProviders().catch((error) => showPageNotice(error.message, 'error'));
   if (view === 'operations') loadOperationsStatus().catch((error) => showPageNotice(error.message, 'error'));
@@ -531,9 +550,12 @@ function resolveInitialTenantID(items, currentTenantID) {
 async function loadSelectedCompanyView(tenantID, revision) {
   const view = window.location.hash.slice(1) || 'users';
   const loads = [];
-  if (view === 'organization') loads.push(loadUnits(tenantID, revision));
-  if (view === 'users') loads.push(loadUnits(tenantID, revision), loadUsers(tenantID, revision));
-  if (view === 'roles') loads.push(loadRoles(tenantID, revision));
+  if (view === 'organization' && loadedUnitTenantID !== tenantID) loads.push(loadUnits(tenantID, revision));
+  if (view === 'users') {
+    if (loadedUnitTenantID !== tenantID) loads.push(loadUnits(tenantID, revision));
+    if (loadedUserTenantID !== tenantID) loads.push(loadUsers(tenantID, revision));
+  }
+  if (view === 'roles' && loadedRoleTenantID !== tenantID) loads.push(loadRoles(tenantID, revision));
   await Promise.all(loads);
 }
 
@@ -541,6 +563,11 @@ async function selectOrganizationTenant(tenantID) {
   const tenant = currentTenants.find((item) => item.id === tenantID);
   if (!tenant) {
     clearOrganizationTenant();
+    return;
+  }
+  if (selectedTenantID === tenantID) {
+    setCompanyContextPresentation(tenant);
+    await loadSelectedCompanyView(tenantID, tenantContextRevision);
     return;
   }
   selectedTenantID = tenantID;
@@ -618,7 +645,7 @@ function renderUnits(items) {
 
 async function fetchUnits(tenantID) {
   if (!tenantID) return [];
-  const payload = await adminRequest(`/admin/v1/tenants/${encodeURIComponent(tenantID)}/organizational-units`);
+  const payload = await latestAdminRequest('units', `/admin/v1/tenants/${encodeURIComponent(tenantID)}/organizational-units`);
   return requiredArray(payload, 'items', 'Organisationseinheiten');
 }
 
@@ -809,7 +836,7 @@ async function loadRoles(tenantID, revision = tenantContextRevision) {
   loadedRoleTenantID = '';
   let payload;
   try {
-    payload = await adminRequest(`/admin/v1/work-roles?tenant_id=${encodeURIComponent(tenantID)}`);
+    payload = await latestAdminRequest('roles', `/admin/v1/work-roles?tenant_id=${encodeURIComponent(tenantID)}`);
   } catch (error) {
     if (tenantID !== selectedTenantID || revision !== tenantContextRevision || loadSequence !== roleLoadSequence) return;
     throw error;
@@ -975,8 +1002,7 @@ function openUserStatus(user) {
 function renderUsers() {
   const query = userSearch?.value.trim().toLocaleLowerCase('de') || '';
   const filtered = currentUsers.filter((user) => !query || [user.display_name, user.login_name, user.organizational_unit_name, user.membership_type, ...(user.roles || [])].join(' ').toLocaleLowerCase('de').includes(query));
-  const collator = new Intl.Collator('de', { sensitivity: 'base', numeric: true });
-  filtered.sort((left, right) => userSort.direction * collator.compare(String(left[userSort.key] || ''), String(right[userSort.key] || '')));
+  filtered.sort((left, right) => userSort.direction * userCollator.compare(String(left[userSort.key] || ''), String(right[userSort.key] || '')));
   const pageCount = Math.max(1, Math.ceil(filtered.length / userPageSize));
   userPage = Math.min(userPage, pageCount);
   const start = (userPage - 1) * userPageSize;
@@ -1034,7 +1060,7 @@ function renderUsers() {
     security.className = `status-badge ${user.invitation_pending ? invitationExpired ? 'status-disabled' : 'status-warning' : user.must_change_password ? 'status-warning' : 'status-active'}`;
     security.textContent = user.invitation_pending ? invitationExpired ? 'Neu-Ausgabe möglich' : 'Aktivierung ausstehend' : user.must_change_password ? 'Passwortwechsel' : 'Eingerichtet';
     if (user.invitation_pending && invitationExpiry && !Number.isNaN(invitationExpiry.getTime())) {
-      security.title = `Einladung gültig bis ${new Intl.DateTimeFormat('de-DE', { dateStyle: 'medium', timeStyle: 'short' }).format(invitationExpiry)}`;
+      security.title = `Einladung gültig bis ${dateTimeFormatter.format(invitationExpiry)}`;
     }
     const details = document.createElement('button');
     details.type = 'button';
@@ -1083,7 +1109,7 @@ async function loadUsers(tenantID, revision = tenantContextRevision) {
   loadedUserTenantID = '';
   let payload;
   try {
-    payload = await adminRequest(`/admin/v1/work-users?tenant_id=${encodeURIComponent(tenantID)}`);
+    payload = await latestAdminRequest('users', `/admin/v1/work-users?tenant_id=${encodeURIComponent(tenantID)}`);
   } catch (error) {
     if (tenantID !== selectedTenantID || revision !== tenantContextRevision || loadSequence !== userLoadSequence) return;
     throw error;
@@ -1092,7 +1118,7 @@ async function loadUsers(tenantID, revision = tenantContextRevision) {
   currentUsers = requiredArray(payload, 'items', 'Arbeitskonten');
   loadedUserTenantID = tenantID;
   userPage = 1;
-  document.querySelector('[data-user-refreshed]').textContent = `Aktualisiert um ${new Intl.DateTimeFormat('de-DE', { hour: '2-digit', minute: '2-digit' }).format(new Date())} Uhr`;
+  document.querySelector('[data-user-refreshed]').textContent = `Aktualisiert um ${timeFormatter.format(new Date())} Uhr`;
   renderUsers();
 }
 
@@ -1228,7 +1254,7 @@ async function loadAuditEvents(reset) {
   currentAuditEvents = reset ? items : currentAuditEvents.concat(items);
   nextAuditCursor = payload.next_cursor || '';
   renderAuditEvents();
-  document.querySelector('[data-audit-refreshed]').textContent = `Aktualisiert um ${new Intl.DateTimeFormat('de-DE', { hour: '2-digit', minute: '2-digit' }).format(new Date())} Uhr`;
+  document.querySelector('[data-audit-refreshed]').textContent = `Aktualisiert um ${timeFormatter.format(new Date())} Uhr`;
   const scope = auditTenantSelect?.value ? auditTenantSelect.selectedOptions[0]?.textContent : 'Installation und alle Unternehmen';
   document.querySelector('[data-audit-summary]').textContent = `${currentAuditEvents.length} Ereignis${currentAuditEvents.length === 1 ? '' : 'se'} · ${scope}`;
 }
@@ -1410,7 +1436,13 @@ async function loadOperationsStatus() {
     : 'Kein unabhängiger Ops-Executor konfiguriert; die Admin-API bleibt rein beobachtend.';
 }
 
-userSearch?.addEventListener('input', () => { userPage = 1; renderUsers(); });
+userSearch?.addEventListener('input', () => {
+  window.clearTimeout(userSearchTimer);
+  userSearchTimer = window.setTimeout(() => {
+    userPage = 1;
+    renderUsers();
+  }, 120);
+});
 document.querySelectorAll('[data-user-sort]').forEach((button) => {
   button.addEventListener('click', () => {
     const key = button.dataset.userSort;

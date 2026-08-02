@@ -58,10 +58,7 @@ func Command(ctx context.Context, arguments []string, stdout, stderr io.Writer) 
 			checks = append(checks, diagnostic.Check{ID: "kafka.transport", Status: diagnostic.Fail, Summary: "Kafka-Client konnte nicht erstellt werden", Diagnosis: clientErr.Error(), Remediation: "Broker, TLS, SASL und Topic-Konfiguration prüfen."})
 		} else {
 			defer client.Close()
-			proofErr := client.Ping(checkContext)
-			if proofErr == nil {
-				proofErr = client.VerifyTopics(checkContext, worker.Kafka.DomainEventsTopic, worker.Kafka.SecurityAuditTopic, worker.Kafka.RuntimeLogsTopic)
-			}
+			proofErr := client.VerifyTopics(checkContext)
 			if proofErr != nil {
 				checks = append(checks, diagnostic.Check{ID: "kafka.transport", Status: diagnostic.Fail, Summary: "Kafka-Broker- und Topic-Nachweis fehlgeschlagen", Diagnosis: proofErr.Error(), Remediation: "Broker, TLS/SASL, ACLs und die drei konfigurierten Topics prüfen."})
 			} else {

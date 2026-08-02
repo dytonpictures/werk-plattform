@@ -36,10 +36,34 @@ type routerServices struct {
 	rateLimitCounter  corecache.CounterPort
 	oidcLogin         OIDCLoginService
 	runtimeLogDropped func() uint64
+	runtimeLogQueued  func() int
+	runtimeLogBytes   func() int64
+	databasePools     []DatabasePoolMetric
 }
 
-func WithRuntimeLogDroppedCounter(counter func() uint64) RouterOption {
-	return func(services *routerServices) { services.runtimeLogDropped = counter }
+type DatabasePoolSnapshot struct {
+	Max, Total, Acquired, Idle, Constructing int32
+	AcquireWaits                             int64
+	AcquireTime                              time.Duration
+}
+
+type DatabasePoolMetric struct {
+	Name     string
+	Snapshot func() DatabasePoolSnapshot
+}
+
+func WithRuntimeLogMetrics(dropped func() uint64, queued func() int, queuedBytes func() int64) RouterOption {
+	return func(services *routerServices) {
+		services.runtimeLogDropped = dropped
+		services.runtimeLogQueued = queued
+		services.runtimeLogBytes = queuedBytes
+	}
+}
+
+func WithDatabasePoolMetrics(pools ...DatabasePoolMetric) RouterOption {
+	return func(services *routerServices) {
+		services.databasePools = append(services.databasePools, pools...)
+	}
 }
 
 func WithRateLimitCounter(counter corecache.CounterPort) RouterOption {
@@ -77,7 +101,7 @@ func NewRouterWithServices(cfg config.Config, readiness readinessChecker, logger
 		}
 	}
 
-	metrics := newHTTPMetrics(cfg.BuildVersion, services.runtimeLogDropped)
+	metrics := newHTTPMetrics(cfg.BuildVersion, services.runtimeLogDropped, services.runtimeLogQueued, services.runtimeLogBytes, services.databasePools)
 	router := chi.NewRouter()
 	router.Use(requestIdentityMiddleware)
 	router.Use(transportSecurityMiddleware(cfg.HTTPTrustedProxyCIDRs))

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sync/atomic"
 	"time"
 
 	"github.com/twmb/franz-go/pkg/kerr"
@@ -17,6 +18,8 @@ import (
 
 	"github.com/dytonpictures/werk/internal/platform/config"
 )
+
+const kafkaMaximumBufferedRecords = 512
 
 type Message struct {
 	Topic     string
@@ -31,13 +34,24 @@ type Writer interface {
 }
 
 type Client struct {
-	client  *kgo.Client
-	timeout time.Duration
+	client   *kgo.Client
+	timeout  time.Duration
+	topics   [3]string
+	failures atomic.Uint64
 }
 
 func NewClient(configuration config.KafkaConfig) (*Client, error) {
 	if !configuration.Enabled || len(configuration.Brokers) == 0 {
 		return nil, errors.New("Kafka is not enabled")
+	}
+	topics := [3]string{
+		configuration.DomainEventsTopic,
+		configuration.SecurityAuditTopic,
+		configuration.RuntimeLogsTopic,
+	}
+	if topics[0] == "" || topics[1] == "" || topics[2] == "" ||
+		topics[0] == topics[1] || topics[0] == topics[2] || topics[1] == topics[2] {
+		return nil, errors.New("Kafka topics must be non-empty and distinct")
 	}
 	options := []kgo.Opt{
 		kgo.SeedBrokers(configuration.Brokers...),
@@ -45,7 +59,10 @@ func NewClient(configuration config.KafkaConfig) (*Client, error) {
 		kgo.RequiredAcks(kgo.AllISRAcks()),
 		kgo.ProducerBatchCompression(kgo.ZstdCompression()),
 		kgo.ProducerBatchMaxBytes(2 << 20),
-		kgo.MaxBufferedRecords(10_000),
+		// WERK publishes synchronously. This only needs to cover concurrent
+		// worker slots and leaves ample headroom without reserving a five-digit
+		// record backlog inside every process.
+		kgo.MaxBufferedRecords(kafkaMaximumBufferedRecords),
 	}
 	if configuration.TLS {
 		tlsConfiguration, err := clientTLSConfig(configuration)
@@ -78,7 +95,7 @@ func NewClient(configuration config.KafkaConfig) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create Kafka client: %w", err)
 	}
-	return &Client{client: client, timeout: configuration.PublishTimeout}, nil
+	return &Client{client: client, timeout: configuration.PublishTimeout, topics: topics}, nil
 }
 
 func (client *Client) Publish(ctx context.Context, message Message) error {
@@ -88,50 +105,42 @@ func (client *Client) Publish(ctx context.Context, message Message) error {
 	publishContext, cancel := context.WithTimeout(ctx, client.timeout)
 	defer cancel()
 	record := &kgo.Record{
-		Topic:     message.Topic,
-		Key:       []byte(message.Key),
-		Value:     append([]byte(nil), message.Value...),
+		Topic: message.Topic,
+		Key:   []byte(message.Key),
+		// ProduceSync completes before Publish returns, so the caller-owned
+		// immutable payload remains valid for the complete franz-go lifetime.
+		Value:     message.Value,
 		Timestamp: message.Timestamp,
+		Headers:   make([]kgo.RecordHeader, 0, len(message.Headers)),
 	}
 	for key, value := range message.Headers {
 		record.Headers = append(record.Headers, kgo.RecordHeader{Key: key, Value: []byte(value)})
 	}
 	if err := client.client.ProduceSync(publishContext, record).FirstErr(); err != nil {
+		client.failures.Add(1)
 		return fmt.Errorf("publish Kafka record: %w", err)
 	}
 	return nil
 }
 
-func (client *Client) Ping(ctx context.Context) error {
-	if client == nil || client.client == nil {
-		return errors.New("Kafka client is not initialized")
+func (client *Client) PublishFailures() uint64 {
+	if client == nil {
+		return 0
 	}
-	checkContext, cancel := context.WithTimeout(ctx, client.timeout)
-	defer cancel()
-	if err := client.client.Ping(checkContext); err != nil {
-		return fmt.Errorf("ping Kafka: %w", err)
-	}
-	return nil
+	return client.failures.Load()
 }
 
-// VerifyTopics checks the complete configured transport contract without
-// allowing Kafka to auto-create a topic with broker defaults. Topic creation,
-// ACLs, retention and replication remain explicit operator responsibilities.
-func (client *Client) VerifyTopics(ctx context.Context, topics ...string) error {
-	if client == nil || client.client == nil || len(topics) == 0 {
-		return errors.New("Kafka client or topics are not configured")
+// VerifyTopics proves broker connectivity and checks the complete configured
+// transport contract without allowing Kafka to auto-create a topic with broker
+// defaults. Topic creation, ACLs, retention and replication remain explicit
+// operator responsibilities.
+func (client *Client) VerifyTopics(ctx context.Context) error {
+	if client == nil || client.client == nil {
+		return errors.New("Kafka client is not configured")
 	}
-	expected := make(map[string]struct{}, len(topics))
 	request := kmsg.NewPtrMetadataRequest()
 	request.AllowAutoTopicCreation = false
-	for _, topic := range topics {
-		if topic == "" {
-			return errors.New("Kafka topic is empty")
-		}
-		if _, exists := expected[topic]; exists {
-			return errors.New("Kafka topics must be distinct")
-		}
-		expected[topic] = struct{}{}
+	for _, topic := range client.topics {
 		topicName := topic
 		request.Topics = append(request.Topics, kmsg.MetadataRequestTopic{Topic: &topicName})
 	}
@@ -141,12 +150,20 @@ func (client *Client) VerifyTopics(ctx context.Context, topics ...string) error 
 	if err != nil {
 		return fmt.Errorf("request Kafka topic metadata: %w", err)
 	}
+	var seen [3]bool
 	for _, topic := range response.Topics {
 		if topic.Topic == nil {
 			continue
 		}
 		name := *topic.Topic
-		if _, requested := expected[name]; !requested {
+		requested := -1
+		for index, expected := range client.topics {
+			if name == expected {
+				requested = index
+				break
+			}
+		}
+		if requested < 0 {
 			continue
 		}
 		if topicError := kerr.ErrorForCode(topic.ErrorCode); topicError != nil {
@@ -160,10 +177,12 @@ func (client *Client) VerifyTopics(ctx context.Context, topics ...string) error 
 				return fmt.Errorf("Kafka topic %q partition %d is unavailable: %w", name, partition.Partition, partitionError)
 			}
 		}
-		delete(expected, name)
+		seen[requested] = true
 	}
-	if len(expected) != 0 {
-		return errors.New("Kafka did not return metadata for every configured topic")
+	for index, present := range seen {
+		if !present {
+			return fmt.Errorf("Kafka did not return metadata for configured topic %q", client.topics[index])
+		}
 	}
 	return nil
 }

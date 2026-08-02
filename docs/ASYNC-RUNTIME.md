@@ -74,10 +74,14 @@ nicht exportiert. Strukturierte Betriebslogs werden unabhängig und
 verlusttolerant nach `platform.runtime-logs.v1` gespiegelt. Diese drei Pfade
 dürfen weder Topic noch Retention oder ACLs teilen. Details stehen in
 [`ADR-020`](adr/ADR-020-kafka-event-audit-und-log-streaming.md).
+Die Ressourcen-, Batch- und Wecksignalgrenzen konkretisiert
+[`ADR-044`](adr/ADR-044-begrenzte-asynchrone-runtime-und-batch-claims.md).
 
-Die Topics werden betreiberseitig angelegt. Metadatenabfragen des Workers und
-von `werkctl doctor` erlauben keine automatische Topic-Erzeugung und prüfen vor
-der Verarbeitung, dass alle drei Topics samt Partitionen erreichbar sind.
+Die Topics werden betreiberseitig angelegt. Eine gemeinsame Metadatenabfrage des
+Workers und von `werkctl doctor` beweist die Brokerverbindung, erlaubt keine
+automatische Topic-Erzeugung und prüft vor der Verarbeitung, dass alle drei
+Topics samt Partitionen erreichbar sind. Ein zusätzlicher Broker-Ping wäre für
+diesen stärkeren Nachweis redundant.
 Retention, Replikation und ACL-Inhalte bleiben Betreiberkonfiguration und
 werden nicht durch zusätzliche Kafka-Adminrechte des Runtime-Principals
 ausgelesen oder verändert.
@@ -89,6 +93,14 @@ Backoff bis maximal fünf Minuten. Nach `max_attempts` bleibt das Ereignis als
 Dead Letter in PostgreSQL erhalten. Fehlertexte sind begrenzt und dürfen keine
 Secrets enthalten.
 
+Jeder Slot claimt höchstens vier aktuell zustellbare Einträge in einer
+Transaktion. Outbox-Batches enthalten weiterhin nur den ältesten offenen
+Eintrag je Tenant-/Partition, Audit-Batches nur den ältesten je Tenant oder
+Installationsstrom. Veröffentlichung und Statusübergang bleiben pro Eintrag.
+Bei geordnetem Shutdown werden noch nicht begonnene Claims sofort samt
+Attempt-Zähler freigegeben; nach einem Prozessabsturz übernimmt weiterhin der
+Leaseablauf.
+
 Der Runtime-Log-Puffer blockiert keine Fachtransaktion. Beim geordneten
 Shutdown nimmt er keine neuen Einträge mehr an und leert bereits akzeptierte
 Einträge bis zur vorgegebenen Frist. Kodierungs-, Puffer-, Publish- und
@@ -97,12 +109,24 @@ Shutdownverluste erhöhen `werk_kafka_runtime_logs_dropped_total`. Lokales
 konventionelle `error`-Attribute sowie Credential-, Token-, Cookie-, Session-
 und Secretfelder geschwärzt.
 
+Der pro Prozess feste Runtime-Log-Puffer umfasst höchstens 2.048 Einträge und
+gleichzeitig höchstens 64 MiB kodierte Payload. Damit bleiben kurze Bursts aus
+üblichen kleinen Logs aufnahmefähig, während große Nachrichten den Speicher
+nicht über das Byte-Budget hinaus belegen. Bei Überlast werden neue
+Kafka-Spiegelungen verworfen und gezählt; der lokale Logpfad bleibt unberührt.
+
 ## Skalierung
 
 `WERK_WORKER_CONCURRENCY` begrenzt die parallelen Slots eines Prozesses und ist
 standardmäßig `4`. Mehrere Worker-Prozesse können durch `FOR UPDATE SKIP LOCKED`
-zusammenarbeiten. Valkey kann später Claims beschleunigen, ist aber weder Quelle
-der Ereignisse noch des Zustellstatus.
+zusammenarbeiten. Leere Outbox- und Audit-Slots erhöhen ihren Pollabstand
+schrittweise von 500 Millisekunden auf höchstens zwei Sekunden und wechseln nach
+einem erfolgreichen Claim wieder auf den kurzen Abstand. Ein stabiler Jitter
+von höchstens zehn Prozent verteilt die Slots und Prozesse zeitlich. Ein
+payloadloses PostgreSQL-`NOTIFY` weckt zusätzlich einen wartenden Slot, enthält
+aber keine ID, keinen Tenant und keine Fachdaten. Verbindliches Polling bleibt
+bei verlorenen Signalen oder Listener-Ausfall aktiv. Valkey kann später Claims
+beschleunigen, ist aber weder Quelle der Ereignisse noch des Zustellstatus.
 
 Topic-Aufbewahrung ist kein fachliches Archiv. PostgreSQL bleibt Quelle für
 Wiederanlauf, Auditnachweis und Dead-Letter-Zustand. Partitionierung, Retention

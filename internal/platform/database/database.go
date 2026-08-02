@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -20,6 +21,9 @@ const (
 	ServiceRuntimeRole  = "werk_service_runtime"
 	WorkerRuntimeRole   = "werk_worker_runtime"
 	ownerRole           = "werk_owner"
+	defaultWorkMaxConns = 16
+	defaultRoleMaxConns = 8
+	maximumPoolConns    = 128
 )
 
 type RuntimeOptions struct {
@@ -30,6 +34,16 @@ type RuntimeOptions struct {
 
 type RuntimeDB struct {
 	pool *pgxpool.Pool
+}
+
+type PoolSnapshot struct {
+	Max          int32
+	Total        int32
+	Acquired     int32
+	Idle         int32
+	Constructing int32
+	AcquireWaits int64
+	AcquireTime  time.Duration
 }
 
 // IdentityDB is intentionally separate from RuntimeDB. It has no tenant-scoped
@@ -81,8 +95,18 @@ func NewRuntime(ctx context.Context, databaseURL string, options RuntimeOptions)
 	if options.ApplicationName != "" {
 		poolConfig.ConnConfig.RuntimeParams["application_name"] = options.ApplicationName
 	}
-	if options.MaxConnections > 0 {
+	if options.MaxConnections > 0 && !poolParameterConfigured(databaseURL, "pool_max_conns") {
 		poolConfig.MaxConns = options.MaxConnections
+	}
+	if !poolParameterConfigured(databaseURL, "pool_max_conn_lifetime_jitter") {
+		poolConfig.MaxConnLifetimeJitter = 5 * time.Minute
+	}
+	if poolConfig.MaxConns < 1 || poolConfig.MaxConns > maximumPoolConns ||
+		poolConfig.MinConns < 0 || poolConfig.MinConns > poolConfig.MaxConns ||
+		poolConfig.MaxConnLifetime < 5*time.Minute || poolConfig.MaxConnLifetime > 24*time.Hour ||
+		poolConfig.MaxConnIdleTime < time.Minute || poolConfig.MaxConnIdleTime > 4*time.Hour ||
+		poolConfig.MaxConnLifetimeJitter < 0 || poolConfig.MaxConnLifetimeJitter > time.Hour {
+		return nil, errors.New("runtime database pool configuration is outside supported bounds")
 	}
 	poolConfig.AfterConnect = func(connectContext context.Context, connection *pgx.Conn) error {
 		return verifyRuntimeConnection(connectContext, connection, options.ExpectedRole)
@@ -100,6 +124,7 @@ func NewIdentity(ctx context.Context, databaseURL, applicationName string) (*Ide
 	runtime, err := NewRuntime(ctx, databaseURL, RuntimeOptions{
 		ExpectedRole:    IdentityRuntimeRole,
 		ApplicationName: applicationName,
+		MaxConnections:  defaultRoleMaxConns,
 	})
 	if err != nil {
 		return nil, err
@@ -108,7 +133,10 @@ func NewIdentity(ctx context.Context, databaseURL, applicationName string) (*Ide
 }
 
 func NewWork(ctx context.Context, databaseURL, applicationName string) (*WorkDB, error) {
-	runtime, err := NewRuntime(ctx, databaseURL, RuntimeOptions{ExpectedRole: WorkRuntimeRole, ApplicationName: applicationName})
+	runtime, err := NewRuntime(ctx, databaseURL, RuntimeOptions{
+		ExpectedRole: WorkRuntimeRole, ApplicationName: applicationName,
+		MaxConnections: defaultWorkMaxConns,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -117,12 +145,16 @@ func NewWork(ctx context.Context, databaseURL, applicationName string) (*WorkDB,
 
 func (database *WorkDB) Close()                         { database.runtime.Close() }
 func (database *WorkDB) Ping(ctx context.Context) error { return database.runtime.Ping(ctx) }
+func (database *WorkDB) PoolSnapshot() PoolSnapshot     { return database.runtime.PoolSnapshot() }
 func (database *WorkDB) WithinTenantRead(ctx context.Context, tenantID tenancy.TenantID, operation TenantOperation) error {
 	return database.runtime.WithinTenantRead(ctx, tenantID, operation)
 }
 
 func NewAdmin(ctx context.Context, databaseURL, applicationName string) (*AdminDB, error) {
-	runtime, err := NewRuntime(ctx, databaseURL, RuntimeOptions{ExpectedRole: AdminRuntimeRole, ApplicationName: applicationName})
+	runtime, err := NewRuntime(ctx, databaseURL, RuntimeOptions{
+		ExpectedRole: AdminRuntimeRole, ApplicationName: applicationName,
+		MaxConnections: defaultRoleMaxConns,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -131,6 +163,7 @@ func NewAdmin(ctx context.Context, databaseURL, applicationName string) (*AdminD
 
 func (database *AdminDB) Close()                         { database.runtime.Close() }
 func (database *AdminDB) Ping(ctx context.Context) error { return database.runtime.Ping(ctx) }
+func (database *AdminDB) PoolSnapshot() PoolSnapshot     { return database.runtime.PoolSnapshot() }
 
 // WithinInstallationRead is reserved for explicitly authorized installation
 // administration queries. It never sets a tenant context and cannot mutate.
@@ -153,29 +186,7 @@ func (database *AdminDB) withinInstallation(ctx context.Context, accessMode pgx.
 	if operation == nil {
 		return errors.New("installation admin transaction requires an operation")
 	}
-	transaction, err := database.runtime.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: accessMode})
-	if err != nil {
-		return fmt.Errorf("begin installation admin transaction: %w", err)
-	}
-	completed := false
-	defer func() {
-		if !completed {
-			rollbackContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			_ = transaction.Rollback(rollbackContext)
-		}
-		if recovered := recover(); recovered != nil {
-			panic(recovered)
-		}
-	}()
-	if err := operation(ctx, transaction); err != nil {
-		return err
-	}
-	if err := transaction.Commit(ctx); err != nil {
-		return fmt.Errorf("commit installation admin transaction: %w", err)
-	}
-	completed = true
-	return nil
+	return withinTransaction(ctx, database.runtime.pool, accessMode, "installation admin", operation)
 }
 func (database *AdminDB) WithinTenantWrite(ctx context.Context, tenantID tenancy.TenantID, operation TenantOperation) error {
 	return database.runtime.WithinTenantWrite(ctx, tenantID, operation)
@@ -185,6 +196,7 @@ func NewService(ctx context.Context, databaseURL, applicationName string) (*Serv
 	runtime, err := NewRuntime(ctx, databaseURL, RuntimeOptions{
 		ExpectedRole:    ServiceRuntimeRole,
 		ApplicationName: applicationName,
+		MaxConnections:  defaultRoleMaxConns,
 	})
 	if err != nil {
 		return nil, err
@@ -205,6 +217,7 @@ func NewWorker(ctx context.Context, databaseURL, applicationName string) (*Worke
 	runtime, err := NewRuntime(ctx, databaseURL, RuntimeOptions{
 		ExpectedRole:    WorkerRuntimeRole,
 		ApplicationName: applicationName,
+		MaxConnections:  defaultWorkMaxConns,
 	})
 	if err != nil {
 		return nil, err
@@ -221,33 +234,37 @@ func (database *WorkerDB) WithinGlobalWrite(ctx context.Context, operation Tenan
 	return database.withinGlobal(ctx, pgx.ReadWrite, operation)
 }
 
+// ListenAsyncWork dedicates one pooled worker connection to a payloadless
+// acceleration signal. PostgreSQL queues remain authoritative; callers must
+// retain polling because notifications are intentionally transient.
+func (database *WorkerDB) ListenAsyncWork(ctx context.Context, wakeups chan<- struct{}) error {
+	if database == nil || database.runtime == nil || wakeups == nil {
+		return errors.New("async work listener is not configured")
+	}
+	connection, err := database.runtime.pool.Acquire(ctx)
+	if err != nil {
+		return fmt.Errorf("acquire async work listener: %w", err)
+	}
+	defer connection.Release()
+	if _, err := connection.Exec(ctx, `LISTEN werk_async_work`); err != nil {
+		return fmt.Errorf("listen for async work: %w", err)
+	}
+	for {
+		if _, err := connection.Conn().WaitForNotification(ctx); err != nil {
+			return fmt.Errorf("wait for async work: %w", err)
+		}
+		select {
+		case wakeups <- struct{}{}:
+		default:
+		}
+	}
+}
+
 func (database *WorkerDB) withinGlobal(ctx context.Context, accessMode pgx.TxAccessMode, operation TenantOperation) (err error) {
 	if operation == nil {
 		return errors.New("global worker transaction requires an operation")
 	}
-	transaction, err := database.runtime.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: accessMode})
-	if err != nil {
-		return fmt.Errorf("begin global worker transaction: %w", err)
-	}
-	completed := false
-	defer func() {
-		if !completed {
-			rollbackContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			_ = transaction.Rollback(rollbackContext)
-		}
-		if recovered := recover(); recovered != nil {
-			panic(recovered)
-		}
-	}()
-	if err := operation(ctx, transaction); err != nil {
-		return err
-	}
-	if err := transaction.Commit(ctx); err != nil {
-		return fmt.Errorf("commit global worker transaction: %w", err)
-	}
-	completed = true
-	return nil
+	return withinTransaction(ctx, database.runtime.pool, accessMode, "global worker", operation)
 }
 
 func (database *IdentityDB) Close() {
@@ -256,6 +273,10 @@ func (database *IdentityDB) Close() {
 
 func (database *IdentityDB) Ping(ctx context.Context) error {
 	return database.pool.Ping(ctx)
+}
+
+func (database *IdentityDB) PoolSnapshot() PoolSnapshot {
+	return poolSnapshot(database.pool)
 }
 
 func (database *IdentityDB) WithinWrite(ctx context.Context, operation TenantOperation) (err error) {
@@ -270,29 +291,7 @@ func (database *IdentityDB) within(ctx context.Context, accessMode pgx.TxAccessM
 	if operation == nil {
 		return errors.New("identity transaction requires an operation")
 	}
-	transaction, err := database.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: accessMode})
-	if err != nil {
-		return fmt.Errorf("begin identity transaction: %w", err)
-	}
-	completed := false
-	defer func() {
-		if !completed {
-			rollbackContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			_ = transaction.Rollback(rollbackContext)
-		}
-		if recovered := recover(); recovered != nil {
-			panic(recovered)
-		}
-	}()
-	if err := operation(ctx, transaction); err != nil {
-		return err
-	}
-	if err := transaction.Commit(ctx); err != nil {
-		return fmt.Errorf("commit identity transaction: %w", err)
-	}
-	completed = true
-	return nil
+	return withinTransaction(ctx, database.pool, accessMode, "identity", operation)
 }
 
 func (database *RuntimeDB) Close() {
@@ -301,6 +300,13 @@ func (database *RuntimeDB) Close() {
 
 func (database *RuntimeDB) Ping(ctx context.Context) error {
 	return database.pool.Ping(ctx)
+}
+
+func (database *RuntimeDB) PoolSnapshot() PoolSnapshot {
+	if database == nil {
+		return PoolSnapshot{}
+	}
+	return poolSnapshot(database.pool)
 }
 
 func (database *RuntimeDB) WithinTenantRead(ctx context.Context, tenantID tenancy.TenantID, operation TenantOperation) error {
@@ -318,9 +324,24 @@ func (database *RuntimeDB) withinTenant(ctx context.Context, tenantID tenancy.Te
 	if operation == nil {
 		return errors.New("tenant transaction requires an operation")
 	}
-	transaction, err := database.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: accessMode})
+	return withinTransaction(ctx, database.pool, accessMode, "tenant", func(ctx context.Context, transaction TenantTx) error {
+		var configuredTenant string
+		if err := transaction.QueryRow(ctx, `
+			SELECT pg_catalog.set_config('werk.tenant_id', $1::uuid::text, true)
+		`, tenantID.String()).Scan(&configuredTenant); err != nil {
+			return fmt.Errorf("set transaction tenant context: %w", err)
+		}
+		if configuredTenant != tenantID.String() {
+			return errors.New("database did not accept the requested tenant context")
+		}
+		return operation(ctx, transaction)
+	})
+}
+
+func withinTransaction(ctx context.Context, pool *pgxpool.Pool, accessMode pgx.TxAccessMode, label string, operation TenantOperation) (err error) {
+	transaction, err := pool.BeginTx(ctx, pgx.TxOptions{AccessMode: accessMode})
 	if err != nil {
-		return fmt.Errorf("begin tenant transaction: %w", err)
+		return fmt.Errorf("begin %s transaction: %w", label, err)
 	}
 	completed := false
 	defer func() {
@@ -333,21 +354,11 @@ func (database *RuntimeDB) withinTenant(ctx context.Context, tenantID tenancy.Te
 			panic(recovered)
 		}
 	}()
-
-	var configuredTenant string
-	if err := transaction.QueryRow(ctx, `
-		SELECT pg_catalog.set_config('werk.tenant_id', $1::uuid::text, true)
-	`, tenantID.String()).Scan(&configuredTenant); err != nil {
-		return fmt.Errorf("set transaction tenant context: %w", err)
-	}
-	if configuredTenant != tenantID.String() {
-		return errors.New("database did not accept the requested tenant context")
-	}
 	if err := operation(ctx, transaction); err != nil {
 		return err
 	}
 	if err := transaction.Commit(ctx); err != nil {
-		return fmt.Errorf("commit tenant transaction: %w", err)
+		return fmt.Errorf("commit %s transaction: %w", label, err)
 	}
 	completed = true
 	return nil
@@ -419,4 +430,26 @@ func scrubRuntimeConnection(connection *pgx.Conn) bool {
 		return false
 	}
 	return value == ""
+}
+
+func poolParameterConfigured(databaseURL, key string) bool {
+	parsed, err := url.Parse(databaseURL)
+	if err != nil {
+		return false
+	}
+	_, configured := parsed.Query()[key]
+	return configured
+}
+
+func poolSnapshot(pool *pgxpool.Pool) PoolSnapshot {
+	if pool == nil {
+		return PoolSnapshot{}
+	}
+	stats := pool.Stat()
+	return PoolSnapshot{
+		Max: stats.MaxConns(), Total: stats.TotalConns(),
+		Acquired: stats.AcquiredConns(), Idle: stats.IdleConns(),
+		Constructing: stats.ConstructingConns(),
+		AcquireWaits: stats.EmptyAcquireCount(), AcquireTime: stats.AcquireDuration(),
+	}
 }

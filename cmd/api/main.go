@@ -184,8 +184,13 @@ func main() {
 		httpapi.WithOIDCLoginService(oidcLoginService),
 	}
 	if logSink != nil {
-		routerOptions = append(routerOptions, httpapi.WithRuntimeLogDroppedCounter(logSink.Dropped))
+		routerOptions = append(routerOptions, httpapi.WithRuntimeLogMetrics(logSink.Dropped, logSink.QueuedEntries, logSink.QueuedBytes))
 	}
+	routerOptions = append(routerOptions, httpapi.WithDatabasePoolMetrics(
+		databasePoolMetric("work", workDatabase.PoolSnapshot),
+		databasePoolMetric("identity", identityDatabase.PoolSnapshot),
+		databasePoolMetric("admin", adminDatabase.PoolSnapshot),
+	))
 	if cacheAdapter != nil {
 		routerOptions = append(routerOptions, httpapi.WithRateLimitCounter(cacheAdapter))
 	}
@@ -241,6 +246,17 @@ func main() {
 	if kafkaClient != nil {
 		kafkaClient.Close()
 	}
+}
+
+func databasePoolMetric(name string, snapshot func() database.PoolSnapshot) httpapi.DatabasePoolMetric {
+	return httpapi.DatabasePoolMetric{Name: name, Snapshot: func() httpapi.DatabasePoolSnapshot {
+		value := snapshot()
+		return httpapi.DatabasePoolSnapshot{
+			Max: value.Max, Total: value.Total, Acquired: value.Acquired,
+			Idle: value.Idle, Constructing: value.Constructing,
+			AcquireWaits: value.AcquireWaits, AcquireTime: value.AcquireTime,
+		}
+	}}
 }
 
 type businessObjectReader interface {

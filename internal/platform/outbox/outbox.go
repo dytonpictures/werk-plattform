@@ -10,12 +10,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/dytonpictures/werk/internal/core/events"
 	"github.com/dytonpictures/werk/internal/core/tenancy"
 	"github.com/dytonpictures/werk/internal/platform/database"
+	"github.com/dytonpictures/werk/internal/platform/runtimepoll"
 )
 
 var ErrNoEventAvailable = errors.New("no outbox event available")
@@ -23,8 +23,16 @@ var ErrNoEventAvailable = errors.New("no outbox event available")
 const (
 	defaultLeaseDuration = 2 * time.Minute
 	maximumErrorLength   = 2000
+	maximumIdlePoll      = 2 * time.Second
+	claimBatchSize       = 4
 	AllEventTypes        = "*"
 )
+
+type Claim struct {
+	Event       events.Event
+	Attempts    int
+	MaxAttempts int
+}
 
 type Consumer interface {
 	Key() string
@@ -105,17 +113,25 @@ func NewStore(workerDatabase *database.WorkerDB) (*Store, error) {
 }
 
 func (store *Store) Claim(ctx context.Context, workerID string) (events.Event, int, int, error) {
-	if strings.TrimSpace(workerID) == "" || len(workerID) > 120 {
-		return events.Event{}, 0, 0, errors.New("worker ID is invalid")
+	claims, err := store.ClaimBatch(ctx, workerID, 1)
+	if err != nil {
+		return events.Event{}, 0, 0, err
 	}
-	var event events.Event
-	var payload string
-	var tags string
-	var causation pgtype.UUID
-	var attempts int
-	var maxAttempts int
+	claim := claims[0]
+	return claim.Event, claim.Attempts, claim.MaxAttempts, nil
+}
+
+func (store *Store) ClaimBatch(ctx context.Context, workerID string, limit int) ([]Claim, error) {
+	if strings.TrimSpace(workerID) == "" || len(workerID) > 120 {
+		return nil, errors.New("worker ID is invalid")
+	}
+	if limit < 1 || limit > claimBatchSize {
+		return nil, errors.New("outbox claim batch size is invalid")
+	}
+	claimedAt := store.now()
+	claims := make([]Claim, 0, limit)
 	err := store.database.WithinGlobalWrite(ctx, func(ctx context.Context, tx database.TenantTx) error {
-		return tx.QueryRow(ctx, `
+		rows, err := tx.Query(ctx, `
 			WITH candidate AS (
 				SELECT current.id
 				FROM werk_core.outbox_events AS current
@@ -132,7 +148,7 @@ func (store *Store) Claim(ctx context.Context, workerID string) (events.Event, i
 				)
 				ORDER BY current.available_at, current.occurred_at, current.id
 				FOR UPDATE SKIP LOCKED
-				LIMIT 1
+				LIMIT $4
 			)
 			UPDATE werk_core.outbox_events AS event
 			SET status = 'processing', attempts = attempts + 1,
@@ -143,28 +159,69 @@ func (store *Store) Claim(ctx context.Context, workerID string) (events.Event, i
 				event.subject_kind, event.subject_id, event.partition_key,
 				event.occurred_at, event.correlation_id, event.causation_id,
 				event.tags::text, event.payload::text, event.attempts, event.max_attempts
-		`, store.now(), workerID, store.now().Add(defaultLeaseDuration)).Scan(
-			&event.ID, &event.TenantID, &event.Type, &event.Producer,
-			&event.SubjectKind, &event.SubjectID, &event.PartitionKey,
-			&event.OccurredAt, &event.CorrelationID, &causation,
-			&tags, &payload, &attempts, &maxAttempts,
-		)
+		`, claimedAt, workerID, claimedAt.Add(defaultLeaseDuration), limit)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var claim Claim
+			var payload string
+			var tags string
+			var causation pgtype.UUID
+			if err := rows.Scan(
+				&claim.Event.ID, &claim.Event.TenantID, &claim.Event.Type, &claim.Event.Producer,
+				&claim.Event.SubjectKind, &claim.Event.SubjectID, &claim.Event.PartitionKey,
+				&claim.Event.OccurredAt, &claim.Event.CorrelationID, &causation,
+				&tags, &payload, &claim.Attempts, &claim.MaxAttempts,
+			); err != nil {
+				return err
+			}
+			if causation.Valid {
+				value := causation.Bytes
+				claim.Event.CausationID = &value
+			}
+			if err := json.Unmarshal([]byte(tags), &claim.Event.Tags); err != nil || events.ValidateTags(claim.Event.Tags) != nil {
+				return events.ErrInvalidEvent
+			}
+			claim.Event.Payload = []byte(payload)
+			claims = append(claims, claim)
+		}
+		return rows.Err()
 	})
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return events.Event{}, 0, 0, ErrNoEventAvailable
+		return nil, err
+	}
+	if len(claims) == 0 {
+		return nil, ErrNoEventAvailable
+	}
+	return claims, nil
+}
+
+func (store *Store) Release(ctx context.Context, claims []Claim, workerID string) error {
+	if len(claims) == 0 {
+		return nil
+	}
+	ids := make([]string, len(claims))
+	for index, claim := range claims {
+		ids[index] = uuidString(claim.Event.ID)
+	}
+	return store.database.WithinGlobalWrite(ctx, func(ctx context.Context, tx database.TenantTx) error {
+		command, err := tx.Exec(ctx, `
+			UPDATE werk_core.outbox_events
+			SET status = CASE WHEN attempts <= 1 THEN 'pending' ELSE 'retry' END,
+				attempts = GREATEST(attempts - 1, 0), available_at = $3,
+				lease_owner = NULL, lease_expires_at = NULL, last_error = NULL
+			WHERE id = ANY($1::uuid[]) AND status = 'processing' AND lease_owner = $2
+		`, ids, workerID, store.now())
+		if err != nil {
+			return err
 		}
-		return events.Event{}, 0, 0, err
-	}
-	if causation.Valid {
-		value := causation.Bytes
-		event.CausationID = &value
-	}
-	if err := json.Unmarshal([]byte(tags), &event.Tags); err != nil || events.ValidateTags(event.Tags) != nil {
-		return events.Event{}, 0, 0, events.ErrInvalidEvent
-	}
-	event.Payload = []byte(payload)
-	return event, attempts, maxAttempts, nil
+		if command.RowsAffected() != int64(len(ids)) {
+			return errors.New("outbox batch release lost a lease")
+		}
+		return nil
+	})
 }
 
 func (store *Store) Process(ctx context.Context, event events.Event, consumer Consumer) error {
@@ -250,13 +307,18 @@ type Runtime struct {
 	workerID    string
 	concurrency int
 	pollDelay   time.Duration
+	wakeups     <-chan struct{}
 }
 
-func NewRuntime(store *Store, registry *Registry, logger *slog.Logger, workerID string, concurrency int) (*Runtime, error) {
+func NewRuntime(store *Store, registry *Registry, logger *slog.Logger, workerID string, concurrency int, wakeups ...<-chan struct{}) (*Runtime, error) {
 	if store == nil || registry == nil || logger == nil || strings.TrimSpace(workerID) == "" || concurrency < 1 || concurrency > 128 {
 		return nil, errors.New("invalid outbox runtime configuration")
 	}
-	return &Runtime{store: store, registry: registry, logger: logger, workerID: workerID, concurrency: concurrency, pollDelay: 500 * time.Millisecond}, nil
+	runtime := &Runtime{store: store, registry: registry, logger: logger, workerID: workerID, concurrency: concurrency, pollDelay: 500 * time.Millisecond}
+	if len(wakeups) > 0 {
+		runtime.wakeups = wakeups[0]
+	}
+	return runtime, nil
 }
 
 func (runtime *Runtime) Run(ctx context.Context) {
@@ -273,37 +335,60 @@ func (runtime *Runtime) Run(ctx context.Context) {
 
 func (runtime *Runtime) runSlot(ctx context.Context, slot int) {
 	workerID := fmt.Sprintf("%s-%d", runtime.workerID, slot)
+	waiter := runtimepoll.NewWaiter(runtime.pollDelay, maximumIdlePoll, workerID)
+	defer waiter.Close()
 	for ctx.Err() == nil {
-		event, attempts, maxAttempts, err := runtime.store.Claim(ctx, workerID)
+		claims, err := runtime.store.ClaimBatch(ctx, workerID, claimBatchSize)
 		if err != nil {
-			if !errors.Is(err, ErrNoEventAvailable) && ctx.Err() == nil {
+			idle := errors.Is(err, ErrNoEventAvailable)
+			if !idle && ctx.Err() == nil {
 				runtime.logger.WarnContext(ctx, "outbox claim failed", "worker", workerID, "error", err)
 			}
-			select {
-			case <-ctx.Done():
+			if !waiter.Wait(ctx, idle, runtime.wakeups) {
 				return
-			case <-time.After(runtime.pollDelay):
-				continue
-			}
-		}
-		consumers := runtime.registry.Consumers(event.Type)
-		if len(consumers) == 0 {
-			err = errors.New("no consumer registered for " + event.Type)
-		}
-		for _, consumer := range consumers {
-			if err = runtime.store.Process(ctx, event, consumer); err != nil {
-				break
-			}
-		}
-		if err != nil {
-			if transitionErr := runtime.store.Fail(ctx, event.ID, workerID, attempts, maxAttempts, err); transitionErr != nil {
-				runtime.logger.ErrorContext(ctx, "outbox failure transition failed", "error", transitionErr)
 			}
 			continue
 		}
-		if err := runtime.store.Complete(ctx, event.ID, workerID); err != nil {
-			runtime.logger.ErrorContext(ctx, "outbox completion failed", "error", err)
+		waiter.Reset()
+		for index, claim := range claims {
+			if ctx.Err() != nil {
+				runtime.releaseClaims(claims[index:], workerID)
+				return
+			}
+			event := claim.Event
+			consumers := runtime.registry.Consumers(event.Type)
+			if len(consumers) == 0 {
+				err = errors.New("no consumer registered for " + event.Type)
+			} else {
+				err = nil
+			}
+			for _, consumer := range consumers {
+				if err = runtime.store.Process(ctx, event, consumer); err != nil {
+					break
+				}
+			}
+			if ctx.Err() != nil {
+				runtime.releaseClaims(claims[index:], workerID)
+				return
+			}
+			if err != nil {
+				if transitionErr := runtime.store.Fail(ctx, event.ID, workerID, claim.Attempts, claim.MaxAttempts, err); transitionErr != nil {
+					runtime.logger.ErrorContext(ctx, "outbox failure transition failed", "error", transitionErr)
+				}
+				continue
+			}
+			if err := runtime.store.Complete(ctx, event.ID, workerID); err != nil {
+				runtime.logger.ErrorContext(ctx, "outbox completion failed", "error", err)
+			}
 		}
+	}
+}
+
+func (runtime *Runtime) releaseClaims(claims []Claim, workerID string) {
+	releaseContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := runtime.store.Release(releaseContext, claims, workerID); err != nil {
+		runtime.logger.Error("outbox shutdown claim release failed", "error", err)
 	}
 }
 
