@@ -49,9 +49,12 @@ type LogSink struct {
 	writer   Writer
 	topic    string
 	queue    chan queuedLog
-	stop     chan struct{}
+	stop     chan context.Context
 	done     chan struct{}
-	closed   atomic.Bool
+	runCtx   context.Context
+	cancel   context.CancelFunc
+	stateMu  sync.RWMutex
+	closed   bool
 	dropped  atomic.Uint64
 	stopOnce sync.Once
 }
@@ -60,10 +63,12 @@ func NewKafkaLogger(base *slog.Logger, exporter *Exporter, metadata LogMetadata)
 	if base == nil || exporter == nil || exporter.writer == nil {
 		return base, nil
 	}
+	runContext, cancel := context.WithCancel(context.Background())
 	sink := &LogSink{
 		writer: exporter.writer, topic: exporter.logsTopic,
 		queue: make(chan queuedLog, logQueueCapacity),
-		stop:  make(chan struct{}), done: make(chan struct{}),
+		stop:  make(chan context.Context, 1), done: make(chan struct{}),
+		runCtx: runContext, cancel: cancel,
 	}
 	go sink.run()
 	handler := &kafkaLogHandler{base: base.Handler(), sink: sink, metadata: metadata}
@@ -75,10 +80,40 @@ func (sink *LogSink) run() {
 	for {
 		select {
 		case record := <-sink.queue:
-			if err := sink.writer.Publish(context.Background(), record.message); err != nil {
-				sink.dropped.Add(1)
-			}
-		case <-sink.stop:
+			sink.publish(sink.runCtx, record)
+		case closeContext := <-sink.stop:
+			sink.drain(closeContext)
+			return
+		}
+	}
+}
+
+func (sink *LogSink) publish(ctx context.Context, record queuedLog) {
+	if err := sink.writer.Publish(ctx, record.message); err != nil {
+		sink.dropped.Add(1)
+	}
+}
+
+func (sink *LogSink) drain(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			sink.discardQueued()
+			return
+		case record := <-sink.queue:
+			sink.publish(ctx, record)
+		default:
+			return
+		}
+	}
+}
+
+func (sink *LogSink) discardQueued() {
+	for {
+		select {
+		case <-sink.queue:
+			sink.dropped.Add(1)
+		default:
 			return
 		}
 	}
@@ -88,11 +123,27 @@ func (sink *LogSink) Close(ctx context.Context) uint64 {
 	if sink == nil {
 		return 0
 	}
-	sink.closed.Store(true)
-	sink.stopOnce.Do(func() { close(sink.stop) })
+	sink.stopOnce.Do(func() {
+		sink.stateMu.Lock()
+		sink.closed = true
+		sink.stop <- ctx
+		sink.stateMu.Unlock()
+	})
 	select {
 	case <-sink.done:
 	case <-ctx.Done():
+		sink.cancel()
+		<-sink.done
+	}
+	sink.cancel()
+	return sink.dropped.Load()
+}
+
+// Dropped returns the number of runtime-log records that could not be
+// exported because encoding, buffering, publishing or bounded shutdown failed.
+func (sink *LogSink) Dropped() uint64 {
+	if sink == nil {
+		return 0
 	}
 	return sink.dropped.Load()
 }
@@ -112,9 +163,6 @@ func (handler *kafkaLogHandler) Enabled(ctx context.Context, level slog.Level) b
 func (handler *kafkaLogHandler) Handle(ctx context.Context, record slog.Record) error {
 	if err := handler.base.Handle(ctx, record); err != nil {
 		return err
-	}
-	if handler.sink.closed.Load() {
-		return nil
 	}
 	attributes := make(map[string]any, len(handler.attrs)+record.NumAttrs())
 	for _, attribute := range handler.attrs {
@@ -158,11 +206,17 @@ func (handler *kafkaLogHandler) Handle(ctx context.Context, record slog.Record) 
 			"data-classification": tags[events.TagDataClassification],
 		},
 	}
+	handler.sink.stateMu.RLock()
+	if handler.sink.closed {
+		handler.sink.stateMu.RUnlock()
+		return nil
+	}
 	select {
 	case handler.sink.queue <- queuedLog{message: message}:
 	default:
 		handler.sink.dropped.Add(1)
 	}
+	handler.sink.stateMu.RUnlock()
 	return nil
 }
 
@@ -227,6 +281,10 @@ func logValue(value slog.Value) any {
 
 func sensitiveLogKey(key string) bool {
 	lower := strings.ToLower(key)
+	segments := strings.Split(lower, ".")
+	if len(segments) > 0 && segments[len(segments)-1] == "error" {
+		return true
+	}
 	for _, marker := range []string{"password", "token", "secret", "authorization", "cookie", "credential", "session"} {
 		if strings.Contains(lower, marker) {
 			return true

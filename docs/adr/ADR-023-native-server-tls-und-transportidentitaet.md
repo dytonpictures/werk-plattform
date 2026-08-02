@@ -6,7 +6,7 @@
 ## Kontext
 
 Die Plattform darf ihre Transportvertraulichkeit und Dienstauthentifizierung
-nicht von einem bestimmten Reverse Proxy, Container-Runtime, Hypervisor oder
+nicht von einem bestimmten Reverse Proxy, Prozessmanager, Hypervisor oder
 Cloud-Angebot abhängig machen. Besonders Verbindungen zwischen Instanzen und
 dem in ADR-022 beschriebenen Platform Witness benötigen später eine
 verlässliche gegenseitige Authentifizierung. TLS allein darf dabei weder
@@ -51,7 +51,7 @@ Die Serverkonfiguration enthält nur Dateireferenzen auf:
 - im Modus `mtls` ein Client-CA-Bundle.
 
 Private Schlüssel werden weder in PostgreSQL noch in allgemeinen
-Konfigurationsobjekten, Images oder Ereignissen gespeichert. Eine spätere PKI,
+Konfigurationsobjekten, Release-Artefakten oder Ereignissen gespeichert. Eine spätere PKI,
 ein Secret Store oder eine Workload-Identity-Lösung stellt Dateien
 beziehungsweise sichere Mounts bereit; der Core hängt nicht von deren Produkt
 ab.

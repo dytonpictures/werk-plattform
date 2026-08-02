@@ -6,12 +6,15 @@ import (
 	"encoding/base64"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/skip2/go-qrcode"
 
+	corecache "github.com/dytonpictures/werk/internal/core/cache"
 	"github.com/dytonpictures/werk/internal/core/identity"
+	"github.com/dytonpictures/werk/internal/platform/identityprotocol/oidc"
 )
 
 // AuthService is intentionally an adapter boundary. Implementations own
@@ -49,8 +52,125 @@ type mfaManager interface {
 	CompleteMFAChallenge(context.Context, string, string, string, string) (identity.LoginResult, error)
 }
 
-func authRoutes(service AuthService) http.Handler {
+type passkeyManager interface {
+	StartPasskeyRegistration(context.Context, string, string, string, string, string) (identity.PasskeyCeremony, error)
+	FinishPasskeyRegistration(context.Context, string, string, string, identity.PasskeyRegistrationCredential, string, string) (identity.PasskeyActivation, error)
+	StartPasskeyLogin(context.Context, string, string) (identity.PasskeyCeremony, error)
+	FinishPasskeyLogin(context.Context, string, identity.PasskeyAuthenticationCredential, string, string) (identity.LoginResult, error)
+}
+
+type identitySelfService interface {
+	ListOwnPasskeys(context.Context, string) ([]identity.PasskeyView, error)
+	RevokeOwnPasskey(context.Context, string, string, string, string, string) (identity.SessionRotation, error)
+	ListOwnSessions(context.Context, string) ([]identity.SessionLifecycleView, error)
+	RevokeOwnSession(context.Context, string, string, string, string) (bool, error)
+}
+
+type initialWorkAccountInvitationAccepter interface {
+	AcceptInitialWorkAccountInvitation(context.Context, string, string, string, string) error
+}
+
+type OIDCLoginService interface {
+	Begin(context.Context, string) (string, error)
+	Complete(context.Context, string, oidc.Callback, string, string) (identity.LoginResult, error)
+}
+
+func authRoutes(service AuthService, options ...any) http.Handler {
+	var rateLimitCounter corecache.CounterPort
+	var oidcLogin OIDCLoginService
+	for _, option := range options {
+		switch value := option.(type) {
+		case corecache.CounterPort:
+			rateLimitCounter = value
+		case OIDCLoginService:
+			oidcLogin = value
+		}
+	}
 	r := chi.NewRouter()
+	invitationActivationLimiter := newSourceWindowLimiter(
+		invitationActivationAttemptsPerWindow,
+		invitationActivationWindow,
+		invitationActivationMaximumSources,
+	).withCounter(rateLimitCounter, "werk:v1:rate:invitation-activation")
+	passkeyStartLimiter := newSourceWindowLimiter(30, time.Minute, 4096).withCounter(rateLimitCounter, "werk:v1:rate:passkey-start")
+	passkeyVerificationLimiter := newSourceWindowLimiter(30, time.Minute, 4096).withCounter(rateLimitCounter, "werk:v1:rate:passkey-verify")
+	r.Get("/oidc/{providerKey}/start", func(w http.ResponseWriter, req *http.Request) {
+		if oidcLogin == nil {
+			writeProblem(w, req, http.StatusNotImplemented, "oidc-login-unavailable", "OIDC login unavailable", "External OIDC login is not configured.")
+			return
+		}
+		providerKey := strings.TrimSpace(chi.URLParam(req, "providerKey"))
+		location, err := oidcLogin.Begin(req.Context(), providerKey)
+		if err != nil {
+			writeProblem(w, req, http.StatusBadRequest, "oidc-login-unavailable", "OIDC login unavailable", "The selected identity provider is unavailable.")
+			return
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		http.Redirect(w, req, location, http.StatusSeeOther)
+	})
+	r.Get("/oidc/{providerKey}/callback", func(w http.ResponseWriter, req *http.Request) {
+		if oidcLogin == nil {
+			writeProblem(w, req, http.StatusNotImplemented, "oidc-login-unavailable", "OIDC login unavailable", "External OIDC login is not configured.")
+			return
+		}
+		query := req.URL.Query()
+		for _, key := range []string{"state", "code", "error"} {
+			if len(query[key]) > 1 {
+				writeProblem(w, req, http.StatusBadRequest, "oidc-callback-rejected", "OIDC login failed", "The identity provider response was rejected.")
+				return
+			}
+		}
+		result, err := oidcLogin.Complete(req.Context(), strings.TrimSpace(chi.URLParam(req, "providerKey")), oidc.Callback{State: query.Get("state"), Code: query.Get("code"), Error: query.Get("error")}, requestIDFromContext(req.Context()), correlationIDFromContext(req.Context()))
+		if err != nil {
+			writeProblem(w, req, http.StatusUnauthorized, "oidc-callback-rejected", "OIDC login failed", "The identity provider response was rejected.")
+			return
+		}
+		setSessionCookie(w, req, result.SessionToken, 0)
+		w.Header().Set("Cache-Control", "no-store")
+		http.Redirect(w, req, result.Redirect, http.StatusSeeOther)
+	})
+	r.Post("/invitations/initial/accept", func(w http.ResponseWriter, req *http.Request) {
+		if !invitationActivationLimiter.allowContext(req.Context(), req.RemoteAddr, time.Now().UTC()) {
+			writeInvitationActivationRateLimit(w, req)
+			return
+		}
+		accepter, ok := service.(initialWorkAccountInvitationAccepter)
+		if !ok {
+			writeProblem(w, req, http.StatusNotImplemented, "invitation-activation-unavailable", "Invitation activation unavailable", "Invitation activation is not configured.")
+			return
+		}
+		var input struct {
+			Token       string `json:"token"`
+			NewPassword string `json:"new_password"`
+		}
+		if decodeJSON(w, req, &input) != nil {
+			writeInvitationActivationRejection(w, req)
+			return
+		}
+		if _, err := identity.HashInitialWorkAccountInvitationToken(input.Token); err != nil ||
+			len(input.NewPassword) < 12 || len(input.NewPassword) > 1024 {
+			writeInvitationActivationRejection(w, req)
+			return
+		}
+		if err := accepter.AcceptInitialWorkAccountInvitation(
+			req.Context(), input.Token, input.NewPassword,
+			requestIDFromContext(req.Context()), correlationIDFromContext(req.Context()),
+		); err != nil {
+			if errors.Is(err, identity.ErrInitialWorkAccountInvitationBusy) {
+				writeInvitationActivationRateLimit(w, req)
+				return
+			}
+			if errors.Is(err, identity.ErrInitialWorkAccountInvitationInvalid) || errors.Is(err, identity.ErrPasswordInvalid) {
+				writeInvitationActivationRejection(w, req)
+				return
+			}
+			writeProblem(w, req, http.StatusInternalServerError, "invitation-activation-processing-failed", "Invitation activation failed", "The invitation could not be processed.")
+			return
+		}
+		// Activation never authenticates implicitly. The user signs in through
+		// the normal provider flow after this one-time ceremony completes.
+		w.WriteHeader(http.StatusNoContent)
+	})
 	r.Post("/login", func(w http.ResponseWriter, req *http.Request) {
 		if service == nil {
 			writeProblem(w, req, http.StatusNotImplemented, "auth-unavailable", "Authentication unavailable", "Authentication is not configured.")
@@ -194,6 +314,196 @@ func authRoutes(service AuthService) http.Handler {
 		setSessionCookie(w, req, result.Rotation.SessionToken, sessionCookieMaxAge(result.Rotation.ExpiresAt))
 		writeJSON(w, http.StatusOK, result)
 	})
+	r.Post("/passkeys/registration/options", func(w http.ResponseWriter, req *http.Request) {
+		manager, ok := service.(passkeyManager)
+		if !ok {
+			writeProblem(w, req, http.StatusNotImplemented, "passkeys-unavailable", "Passkeys unavailable", "Passkey authentication is not configured.")
+			return
+		}
+		var input struct {
+			CurrentPassword string `json:"current_password"`
+			DisplayName     string `json:"display_name"`
+		}
+		if decodeJSON(w, req, &input) != nil || input.CurrentPassword == "" || input.DisplayName == "" {
+			writeProblem(w, req, http.StatusBadRequest, "invalid-passkey-enrollment", "Invalid passkey enrollment", "Enrollment data is invalid.")
+			return
+		}
+		result, err := manager.StartPasskeyRegistration(
+			req.Context(), cookieValue(req, "werk_session"), input.CurrentPassword, input.DisplayName,
+			requestIDFromContext(req.Context()), correlationIDFromContext(req.Context()),
+		)
+		if err != nil {
+			if !isAuthenticationRejection(err) {
+				writeProblem(w, req, http.StatusInternalServerError, "passkey-processing-failed", "Passkey processing failed", "The passkey request could not be processed.")
+				return
+			}
+			writeProblem(w, req, http.StatusUnauthorized, "passkey-enrollment-failed", "Passkey enrollment failed", "Enrollment could not be started.")
+			return
+		}
+		setPrivateCookie(w, req, "webauthn_ceremony", result.Token, int((5*time.Minute)/time.Second))
+		writeJSON(w, http.StatusOK, result.PublicKey)
+	})
+	r.Post("/passkeys/registration/verification", func(w http.ResponseWriter, req *http.Request) {
+		manager, ok := service.(passkeyManager)
+		if !ok {
+			writeProblem(w, req, http.StatusNotImplemented, "passkeys-unavailable", "Passkeys unavailable", "Passkey authentication is not configured.")
+			return
+		}
+		var input struct {
+			DisplayName string                                 `json:"display_name"`
+			Credential  identity.PasskeyRegistrationCredential `json:"credential"`
+		}
+		if decodeJSON(w, req, &input) != nil || input.DisplayName == "" {
+			writeProblem(w, req, http.StatusBadRequest, "invalid-passkey-enrollment", "Invalid passkey enrollment", "Enrollment data is invalid.")
+			return
+		}
+		result, err := manager.FinishPasskeyRegistration(
+			req.Context(), cookieValue(req, "werk_session"), cookieValue(req, "webauthn_ceremony"),
+			input.DisplayName, input.Credential,
+			requestIDFromContext(req.Context()), correlationIDFromContext(req.Context()),
+		)
+		if err != nil {
+			if !isAuthenticationRejection(err) {
+				writeProblem(w, req, http.StatusInternalServerError, "passkey-processing-failed", "Passkey processing failed", "The passkey request could not be processed.")
+				return
+			}
+			writeProblem(w, req, http.StatusUnauthorized, "passkey-verification-failed", "Passkey verification failed", "The passkey response was rejected.")
+			return
+		}
+		if err := result.Rotation.Validate(time.Now()); err != nil {
+			writeProblem(w, req, http.StatusInternalServerError, "session-rotation-failed", "Session rotation failed", "The replacement session could not be installed.")
+			return
+		}
+		setPrivateCookie(w, req, "webauthn_ceremony", "", -1)
+		setSessionCookie(w, req, result.Rotation.SessionToken, sessionCookieMaxAge(result.Rotation.ExpiresAt))
+		writeJSON(w, http.StatusCreated, map[string]any{"registered": true, "display_name": result.DisplayName})
+	})
+	r.Get("/passkeys", func(w http.ResponseWriter, req *http.Request) {
+		manager, ok := service.(identitySelfService)
+		if !ok {
+			writeProblem(w, req, http.StatusNotImplemented, "identity-self-service-unavailable", "Identity self-service unavailable", "Identity self-service is not configured.")
+			return
+		}
+		items, err := manager.ListOwnPasskeys(req.Context(), cookieValue(req, "werk_session"))
+		if err != nil {
+			writeProblem(w, req, http.StatusUnauthorized, "invalid-session", "Authentication required", "No valid session exists.")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	})
+	r.Delete("/passkeys/{factorID}", func(w http.ResponseWriter, req *http.Request) {
+		manager, ok := service.(identitySelfService)
+		if !ok {
+			writeProblem(w, req, http.StatusNotImplemented, "identity-self-service-unavailable", "Identity self-service unavailable", "Identity self-service is not configured.")
+			return
+		}
+		var input struct {
+			CurrentPassword string `json:"current_password"`
+		}
+		if decodeJSON(w, req, &input) != nil || input.CurrentPassword == "" {
+			writeProblem(w, req, http.StatusBadRequest, "invalid-passkey-revocation", "Invalid passkey revocation", "The revocation request is invalid.")
+			return
+		}
+		rotation, err := manager.RevokeOwnPasskey(req.Context(), cookieValue(req, "werk_session"), chi.URLParam(req, "factorID"), input.CurrentPassword, requestIDFromContext(req.Context()), correlationIDFromContext(req.Context()))
+		if err != nil || rotation.Validate(time.Now()) != nil {
+			writeProblem(w, req, http.StatusUnauthorized, "passkey-revocation-failed", "Passkey revocation failed", "The passkey could not be revoked.")
+			return
+		}
+		setSessionCookie(w, req, rotation.SessionToken, sessionCookieMaxAge(rotation.ExpiresAt))
+		w.WriteHeader(http.StatusNoContent)
+	})
+	r.Get("/sessions", func(w http.ResponseWriter, req *http.Request) {
+		manager, ok := service.(identitySelfService)
+		if !ok {
+			writeProblem(w, req, http.StatusNotImplemented, "identity-self-service-unavailable", "Identity self-service unavailable", "Identity self-service is not configured.")
+			return
+		}
+		items, err := manager.ListOwnSessions(req.Context(), cookieValue(req, "werk_session"))
+		if err != nil {
+			writeProblem(w, req, http.StatusUnauthorized, "invalid-session", "Authentication required", "No valid session exists.")
+			return
+		}
+		truncated := len(items) > 100
+		if truncated {
+			items = items[:100]
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"items": items, "truncated": truncated})
+	})
+	r.Delete("/sessions/{sessionID}", func(w http.ResponseWriter, req *http.Request) {
+		manager, ok := service.(identitySelfService)
+		if !ok {
+			writeProblem(w, req, http.StatusNotImplemented, "identity-self-service-unavailable", "Identity self-service unavailable", "Identity self-service is not configured.")
+			return
+		}
+		current, err := manager.RevokeOwnSession(req.Context(), cookieValue(req, "werk_session"), chi.URLParam(req, "sessionID"), requestIDFromContext(req.Context()), correlationIDFromContext(req.Context()))
+		if err != nil {
+			writeProblem(w, req, http.StatusNotFound, "session-not-found", "Session not found", "The session does not exist or cannot be revoked.")
+			return
+		}
+		if current {
+			setSessionCookie(w, req, "", -1)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	r.Post("/passkeys/authentication/options", func(w http.ResponseWriter, req *http.Request) {
+		manager, ok := service.(passkeyManager)
+		if !ok {
+			writeProblem(w, req, http.StatusNotImplemented, "passkeys-unavailable", "Passkeys unavailable", "Passkey authentication is not configured.")
+			return
+		}
+		if !passkeyStartLimiter.allowContext(req.Context(), req.RemoteAddr, time.Now().UTC()) {
+			w.Header().Set("Retry-After", "60")
+			writeProblem(w, req, http.StatusTooManyRequests, "passkey-login-rate-limited", "Passkey login temporarily limited", "Too many passkey requests are in progress. Try again later.")
+			return
+		}
+		var input struct {
+			// Accepted temporarily for v1 wire compatibility and deliberately
+			// ignored. Passkey account selection is performed by WebAuthn.
+			LegacyLoginName string `json:"login_name,omitempty"`
+		}
+		if decodeJSON(w, req, &input) != nil {
+			writeProblem(w, req, http.StatusBadRequest, "invalid-passkey-login", "Invalid passkey login", "The passkey request is invalid.")
+			return
+		}
+		result, err := manager.StartPasskeyLogin(
+			req.Context(), requestIDFromContext(req.Context()), correlationIDFromContext(req.Context()),
+		)
+		if err != nil {
+			writeProblem(w, req, http.StatusUnauthorized, "passkey-login-failed", "Passkey login failed", "Passkey authentication could not be started.")
+			return
+		}
+		setPrivateCookie(w, req, "webauthn_ceremony", result.Token, int((5*time.Minute)/time.Second))
+		setCSRFCookie(w, req, newCSRFToken(), int((5*time.Minute)/time.Second))
+		writeJSON(w, http.StatusOK, result.PublicKey)
+	})
+	r.Post("/passkeys/authentication/verification", func(w http.ResponseWriter, req *http.Request) {
+		manager, ok := service.(passkeyManager)
+		if !ok {
+			writeProblem(w, req, http.StatusNotImplemented, "passkeys-unavailable", "Passkeys unavailable", "Passkey authentication is not configured.")
+			return
+		}
+		if !passkeyVerificationLimiter.allowContext(req.Context(), req.RemoteAddr, time.Now().UTC()) {
+			w.Header().Set("Retry-After", "60")
+			writeProblem(w, req, http.StatusTooManyRequests, "passkey-verification-rate-limited", "Passkey verification temporarily limited", "Too many passkey responses are in progress. Try again later.")
+			return
+		}
+		var credential identity.PasskeyAuthenticationCredential
+		if decodeJSON(w, req, &credential) != nil {
+			writeProblem(w, req, http.StatusBadRequest, "invalid-passkey-login", "Invalid passkey login", "The passkey response is invalid.")
+			return
+		}
+		result, err := manager.FinishPasskeyLogin(
+			req.Context(), cookieValue(req, "webauthn_ceremony"), credential,
+			requestIDFromContext(req.Context()), correlationIDFromContext(req.Context()),
+		)
+		if err != nil {
+			writeProblem(w, req, http.StatusUnauthorized, "passkey-verification-failed", "Passkey verification failed", "The passkey response was rejected.")
+			return
+		}
+		setPrivateCookie(w, req, "webauthn_ceremony", "", -1)
+		setSessionCookie(w, req, result.SessionToken, 0)
+		writeJSON(w, http.StatusOK, map[string]string{"redirect": result.Redirect})
+	})
 	r.Get("/session", func(w http.ResponseWriter, req *http.Request) {
 		if service == nil {
 			writeProblem(w, req, http.StatusNotImplemented, "auth-unavailable", "Authentication unavailable", "Authentication is not configured.")
@@ -293,6 +603,15 @@ func authRoutes(service AuthService) http.Handler {
 	return r
 }
 
+func writeInvitationActivationRejection(writer http.ResponseWriter, request *http.Request) {
+	writeProblem(writer, request, http.StatusBadRequest, "invitation-activation-failed", "Invitation activation failed", "The invitation could not be accepted.")
+}
+
+func writeInvitationActivationRateLimit(writer http.ResponseWriter, request *http.Request) {
+	writer.Header().Set("Retry-After", "60")
+	writeProblem(writer, request, http.StatusTooManyRequests, "invitation-activation-rate-limited", "Invitation activation temporarily limited", "Too many activation attempts are in progress. Try again later.")
+}
+
 func isAuthenticationRejection(err error) bool {
 	return errors.Is(err, identity.ErrInvalidCredentials) ||
 		errors.Is(err, identity.ErrSessionInvalid) ||
@@ -301,6 +620,7 @@ func isAuthenticationRejection(err error) bool {
 		errors.Is(err, identity.ErrMFARequired) ||
 		errors.Is(err, identity.ErrMFAEnrollment) ||
 		errors.Is(err, identity.ErrMFAChallengeUsed) ||
+		errors.Is(err, identity.ErrPasskeyInvalid) ||
 		errors.Is(err, identity.ErrAccessDenied)
 }
 

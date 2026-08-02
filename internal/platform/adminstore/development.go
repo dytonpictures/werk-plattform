@@ -3,6 +3,7 @@ package adminstore
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -41,16 +42,48 @@ func (service *Service) EnsureDevelopmentWorkAccount(ctx context.Context, passwo
 	if err != nil {
 		return err
 	}
+	changedAt := service.now()
 	return service.database.WithinTenantWrite(ctx, tenantID, func(ctx context.Context, tx database.TenantTx) error {
 		if _, err := tx.Exec(ctx, `SELECT pg_catalog.pg_advisory_xact_lock(24578472680768854)`); err != nil {
 			return err
 		}
 		if _, err := tx.Exec(ctx, `
-			INSERT INTO werk_core.tenants (id,name,status,default_locale,default_timezone)
-			VALUES ($1::uuid,'WERK Development','active','de-DE','Europe/Berlin')
+			INSERT INTO werk_core.tenants (
+				id,name,status,default_locale,default_timezone,created_at,updated_at,version
+			)
+			VALUES ($1::uuid,'WERK Development','active','de-DE','Europe/Berlin',$2,$2,1)
 			ON CONFLICT (id) DO NOTHING
-		`, developmentTenantID); err != nil {
+		`, developmentTenantID, changedAt); err != nil {
 			return err
+		}
+		var tenantName, tenantStatus string
+		var sourceVersion uint64
+		var sourceUpdatedAt time.Time
+		if err := tx.QueryRow(ctx, `
+			SELECT name, status, version, updated_at
+			FROM werk_core.tenants
+			WHERE id=$1::uuid
+			FOR UPDATE
+		`, developmentTenantID).Scan(
+			&tenantName, &tenantStatus, &sourceVersion, &sourceUpdatedAt,
+		); err != nil {
+			return err
+		}
+		switch tenancy.TenantStatus(tenantStatus) {
+		case tenancy.TenantStatusActive:
+			if err := service.businessObjects.PublishWorkspace(
+				ctx, tx, tenantID, tenantName, sourceVersion, sourceUpdatedAt,
+			); err != nil {
+				return err
+			}
+		case tenancy.TenantStatusSuspended, tenancy.TenantStatusArchived:
+			if err := service.businessObjects.WithdrawWorkspace(
+				ctx, tx, tenantID, sourceVersion, sourceUpdatedAt,
+			); err != nil {
+				return err
+			}
+		default:
+			return errors.New("development tenant has an invalid status")
 		}
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO werk_core.organizational_units (id,tenant_id,unit_type,name,status)
@@ -79,7 +112,7 @@ func (service *Service) EnsureDevelopmentWorkAccount(ctx context.Context, passwo
 		if _, err := tx.Exec(ctx, `INSERT INTO werk_core.persons (party_id,tenant_id,given_name,family_name) VALUES ($1::uuid,$2::uuid,'Dev','Worker')`, developmentPartyID, developmentTenantID); err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, `INSERT INTO werk_core.memberships (id,tenant_id,party_id,organizational_unit_id,membership_type,valid_from) VALUES ($1::uuid,$2::uuid,$3::uuid,$4::uuid,'team.member',$5)`, developmentMembershipID, developmentTenantID, developmentPartyID, developmentUnitID, service.now()); err != nil {
+		if _, err := tx.Exec(ctx, `INSERT INTO werk_core.memberships (id,tenant_id,party_id,organizational_unit_id,membership_type,valid_from) VALUES ($1::uuid,$2::uuid,$3::uuid,$4::uuid,'team.member',$5)`, developmentMembershipID, developmentTenantID, developmentPartyID, developmentUnitID, changedAt); err != nil {
 			return err
 		}
 		if _, err := tx.Exec(ctx, `INSERT INTO werk_core.accounts (id,account_class,tenant_id,person_party_id,login_name,status,must_change_password) VALUES ($1::uuid,'work',$2::uuid,$3::uuid,$4,'active',true)`, developmentAccountID, developmentTenantID, developmentPartyID, developmentLoginName); err != nil {
@@ -98,13 +131,13 @@ func (service *Service) EnsureDevelopmentWorkAccount(ctx context.Context, passwo
 		if _, err := tx.Exec(ctx, `INSERT INTO werk_core.role_permissions (role_id,permission_id) SELECT $1::uuid,id FROM werk_core.permissions WHERE permission_key='core.workspace.access' ON CONFLICT DO NOTHING`, roleID); err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, `INSERT INTO werk_core.role_assignments (id,account_id,role_id,access_plane,scope_type,scope_tenant_id,valid_from) VALUES ($1::uuid,$2::uuid,$3::uuid,'work','tenant',$4::uuid,$5)`, developmentAssignmentID, developmentAccountID, roleID, developmentTenantID, service.now()); err != nil {
+		if _, err := tx.Exec(ctx, `INSERT INTO werk_core.role_assignments (id,account_id,role_id,access_plane,scope_type,scope_tenant_id,valid_from) VALUES ($1::uuid,$2::uuid,$3::uuid,'work','tenant',$4::uuid,$5)`, developmentAssignmentID, developmentAccountID, roleID, developmentTenantID, changedAt); err != nil {
 			return err
 		}
 		if _, err := tx.Exec(ctx, `INSERT INTO werk_core.security_audit_events (id,event_type,outcome,account_id,tenant_id,request_id,correlation_id,details) VALUES ($1::uuid,'identity.work-account.created.v1','succeeded',NULL,$2::uuid,$3::uuid,$4::uuid,jsonb_build_object('created_account_id',$5::text,'development_bootstrap',true))`, developmentAuditID, developmentTenantID, developmentRequestID, developmentCorrelationID, developmentAccountID); err != nil {
 			return err
 		}
-		_, err = tx.Exec(ctx, `INSERT INTO werk_core.outbox_events (id,tenant_id,event_type,producer,subject_kind,subject_id,partition_key,occurred_at,correlation_id,payload) VALUES ($1::uuid,$2::uuid,'core.identity.work-account-created.v1','core.identity','core.identity.work-account',$3::uuid,$3,$4,$5::uuid,jsonb_build_object('account_id',$3::text,'party_id',$6::text,'development_bootstrap',true))`, developmentEventID, developmentTenantID, developmentAccountID, service.now(), developmentCorrelationID, developmentPartyID)
+		_, err = tx.Exec(ctx, `INSERT INTO werk_core.outbox_events (id,tenant_id,event_type,producer,subject_kind,subject_id,partition_key,occurred_at,correlation_id,payload) VALUES ($1::uuid,$2::uuid,'core.identity.work-account-created.v1','core.identity','core.identity.work-account',$3::uuid,$3,$4,$5::uuid,jsonb_build_object('account_id',$3::text,'party_id',$6::text,'development_bootstrap',true))`, developmentEventID, developmentTenantID, developmentAccountID, changedAt, developmentCorrelationID, developmentPartyID)
 		return err
 	})
 }

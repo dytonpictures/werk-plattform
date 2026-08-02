@@ -168,7 +168,7 @@ WERK startet als **modularer Monolith**. Die Module werden fachlich und technisc
 - **Datenzugriff:** `sqlc`,
 - **Migrationen:** `goose`,
 - **Performance-Dienst:** Valkey über eine Redis-kompatible, austauschbare Go-Schnittstelle,
-- **Auslieferung:** reproduzierbare Container und Docker Compose für die erste Betriebsstufe.
+- **Auslieferung:** native Prozesse, Linux-Pakete und ein einfacher Start über eine zentrale `.env`.
 
 Konkrete Framework-Versionen sind austauschbare Ausgangspunkte und keine dauerhaften Produktgrenzen.
 
@@ -343,7 +343,7 @@ Vor Implementierung eines Moduls oder einer kritischen Funktion wird ein dokumen
 - manipulierte Dateien, Importe, Webhooks und API-Anfragen,
 - SQL-Injection, XSS, CSRF, SSRF, Pfadmanipulation und unsichere Weiterleitungen,
 - Brute Force, Credential Stuffing, Rate-Limit-Umgehung und Ressourcenerschöpfung,
-- kompromittierte Abhängigkeiten, Build-Systeme, Container oder Updatekanäle,
+- kompromittierte Abhängigkeiten, Build-Systeme oder Updatekanäle,
 - unsichere oder bösartige Plugins,
 - Prompt Injection, Datenabfluss und unkontrollierte Aktionen durch KI-Funktionen,
 - Ransomware, Verlust von Schlüsseln, Fehlkonfiguration und Bedienfehler,
@@ -370,7 +370,13 @@ Diese Orientierung stellt noch keine Zertifizierung oder automatisch erreichte R
 - Jede natürliche Person verwendet eine eigene Identität; gemeinsam genutzte Benutzerkonten sind unzulässig.
 - Externe Identitätsanbieter werden über standardisierte Verfahren wie OpenID Connect angebunden. Weitere Enterprise-Verfahren können kontrolliert ergänzt werden.
 - Lokale Konten bleiben für Self-Hosting und Notfallzugriff möglich, werden aber besonders geschützt.
-- Mehrfaktor-Authentifizierung ist für privilegierte Konten verpflichtend und für alle Benutzer unterstützbar.
+- Mehrfaktor-Authentifizierung wird für Administrationskonten und alle Benutzer
+  unterstützt und als selbst gestartete Verstärkung empfohlen; sie ist kein
+  globales Admin-Zugangs-Gate. Aktivierte Faktoren bleiben bei den zugehörigen
+  Anmeldewegen verbindlich. Besonders sensible Aktionen können eine eigene,
+  aktions- und ressourcengebundene Re-Authentifizierung verlangen; die aktuelle
+  Grenze steht in
+  [`ADR-032`](adr/ADR-032-optionale-admin-mfa-und-aktionsgebundene-reauthentifizierung.md).
 - Passkeys werden als phishing-resistente Anmeldeoption vorgesehen.
 - Kennwörter werden ausschließlich mit einem aktuellen, dafür geeigneten Passwort-Hashverfahren und individuellen Salts gespeichert. Parameter müssen ohne Datenverlust nachschärfbar sein.
 - Wiederherstellungscodes und Reset-Tokens sind einmalig, zeitlich begrenzt und gespeichert nur gehasht oder anderweitig angemessen geschützt.
@@ -432,7 +438,7 @@ Zusätzliche Regeln:
 - Kommunikation über unsichere Netze wird mit aktuellen TLS-Konfigurationen geschützt.
 - Schutz ruhender Daten wird für Datenbank, Dokumente, Backups und Exporte dokumentiert. Die Verantwortungsgrenze zwischen WERK und Betreiber muss eindeutig sein.
 - Besonders sensible Felder können zusätzlich anwendungsseitig verschlüsselt werden, sofern Suche, Betrieb und Schlüsselrotation kontrolliert lösbar bleiben.
-- Schlüssel und Geheimnisse werden nicht im Quellcode, Container-Image, Repository oder normalen Log gespeichert.
+- Schlüssel und Geheimnisse werden nicht im Quellcode, Repository, Release-Artefakt oder normalen Log gespeichert.
 - Geheimnisse werden über Dateien, Secret Stores oder andere dafür vorgesehene Mechanismen injiziert und können ohne Neuinstallation rotiert werden.
 - Entwicklung, Test, Pilot und Produktion verwenden getrennte Zugangsdaten und Vertrauensräume.
 - Produktivdaten dürfen nicht ungeprüft in Entwicklungs- oder Testumgebungen kopiert werden.
@@ -519,8 +525,8 @@ WERK unterstützt:
 ### 10.14 Sichere Self-Hosting-Infrastruktur
 
 - Öffentliche Angriffsflächen werden minimiert; Datenbank, Valkey und interne Verwaltungsendpunkte bleiben intern.
-- Container und Prozesse laufen ohne Root-Rechte, soweit technisch möglich, mit minimalen Linux-Fähigkeiten und restriktiven Dateisystemrechten.
-- Images sind minimal, versioniert, reproduzierbar gebaut, gescannt und unveränderlich referenziert.
+- Prozesse laufen ohne Root-Rechte, soweit technisch möglich, mit minimalen Linux-Fähigkeiten und restriktiven Dateisystemrechten.
+- Native Pakete sind minimal, versioniert, reproduzierbar gebaut, geprüft und unveränderlich referenziert.
 - Entwicklungs- oder Debugfunktionen sind in Produktion standardmäßig deaktiviert.
 - Health- und Metrikendpunkte geben keine Geheimnisse oder unnötigen Systemdetails preis.
 - Reverse Proxy, TLS, Sicherheitsheader, Netzwerksegmentierung und vertrauenswürdige Proxygrenzen werden dokumentiert.
@@ -539,9 +545,9 @@ Der Entwicklungsprozess umfasst mindestens:
 - automatisierte Tests gegen typische Web-, API- und Mandantenangriffe,
 - Fuzzing für Parser, Importer und besonders kritische Go-Komponenten,
 - Software Bill of Materials in einem verbreiteten maschinenlesbaren Format,
-- signierte Release-Artefakte, Images und Update-Metadaten,
+- signierte Release-Artefakte und Update-Metadaten,
 - dokumentierte Build-Herkunft und reproduzierbare beziehungsweise nachvollziehbare Builds,
-- Schwachstellenprüfung von Images und ausgelieferten Abhängigkeiten,
+- Schwachstellenprüfung ausgelieferter Binärdateien und Abhängigkeiten,
 - unabhängigen Penetrationstest vor breitem Produktivbetrieb und nach wesentlichen Sicherheitsänderungen,
 - getrennte Rechte für Entwicklung, Build, Signierung und Veröffentlichung,
 - geschützte Branches, überprüfte Änderungen und kurzlebige CI-Zugangsdaten.
@@ -595,7 +601,7 @@ Eine Funktion ist nicht produktionsbereit, wenn eines der zutreffenden Kriterien
 5. Audit- und Datenschutzverhalten sind definiert und getestet.
 6. Eingaben, Dateien, Ausgaben und externe Aufrufe besitzen angemessene Schutzmaßnahmen.
 7. Geheimnisse und personenbezogene Daten erscheinen nicht in Logs oder Fehlermeldungen.
-8. Abhängigkeiten, Images und Artefakte durchlaufen die festgelegten Lieferkettenprüfungen.
+8. Abhängigkeiten und Artefakte durchlaufen die festgelegten Lieferkettenprüfungen.
 9. Backup-, Migrations- und Wiederherstellungsfolgen sind bewertet.
 10. Dokumentation beschreibt sichere Konfiguration, Betrieb und bekannte Restrisiken.
 11. Es bestehen keine offenen kritischen Schwachstellen; hohe Risiken benötigen eine ausdrücklich verantwortete, befristete Ausnahme mit Maßnahmenplan.

@@ -447,6 +447,7 @@ func (service *Service) ReplaceWorkUserRoles(ctx context.Context, accountID stri
 			UPDATE werk_core.role_assignments
 			SET valid_until=CASE WHEN valid_from < $3 THEN $3 ELSE valid_from + interval '1 microsecond' END
 			WHERE account_id=$1::uuid AND access_plane='work' AND scope_tenant_id=$2::uuid
+			  AND scope_type='tenant' AND scope_id IS NULL
 			  AND valid_from <= $3 AND (valid_until IS NULL OR valid_until > $3)
 			  AND NOT (role_id=ANY($4::uuid[]))
 		`, accountID, tenantID.String(), now, validRoleIDs); err != nil {

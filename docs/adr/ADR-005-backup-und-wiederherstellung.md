@@ -39,7 +39,7 @@ schlägt fehl; ein still tenantgefiltertes Backup ist nicht zulässig.
 
 - PostgreSQL-18-Client und -Server verwenden dasselbe Major-Release.
 - Der Dump wird im PostgreSQL-Custom-Format direkt in `age` gestreamt.
-- Der Backup-Container erhält nur öffentliche `age`-Empfänger, niemals einen
+- Der Backup-Prozess erhält nur öffentliche `age`-Empfänger, niemals einen
   privaten Wiederherstellungsschlüssel.
 - Es gibt keine unverschlüsselte SQL-, Tar- oder Dump-Datei auf Platte.
 - Erst ein vollständig erzeugtes Ciphertext-Artefakt wird atomar veröffentlicht;
@@ -75,8 +75,8 @@ installationsweite Daten. Er prüft danach:
 - Fehlschlag mit einer falschen `age`-Identität,
 - das Ausbleiben unverschlüsselter Dump-Artefakte.
 
-Jeder Testlauf verwendet einen eindeutigen Compose-Projektnamen und entfernt nur
-seine eigenen Container, Netze, Volumes und temporären Dateien.
+Jeder Testlauf verwendet eine explizit benannte, isolierte Wegwerf-Datenbank und
+entfernt nur seine eigenen Daten und temporären Dateien.
 
 ## Grenzen und Folgen
 

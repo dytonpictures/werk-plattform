@@ -3,198 +3,123 @@ name: Release
 on:
   push:
     tags:
-      - "v*.*.*"
+      # GitHub uses glob syntax here; the verify job enforces exact SemVer.
+      - "v[0-9]*.[0-9]*.[0-9]*"
+      - "v[0-9]*.[0-9]*.[0-9]*-*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing SemVer tag to release
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ github.ref_name }}
   cancel-in-progress: false
 
 jobs:
-  quality:
-    runs-on: ubuntu-latest
+  verify:
+    name: Verify release source
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     outputs:
-      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.release.outputs.tag }}
+      version: ${{ steps.release.outputs.version }}
+      prerelease: ${{ steps.release.outputs.prerelease }}
     steps:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
-      - name: Validate release tag
-        id: version
+          persist-credentials: false
+          ref: ${{ inputs.tag || github.ref }}
+      - id: release
+        name: Validate tag and Canary ancestry
+        shell: bash
+        env:
+          REQUESTED_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$REQUESTED_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
+            echo "not a supported SemVer release tag: $REQUESTED_TAG" >&2
+            exit 1
+          fi
+          git fetch --no-tags origin Canary
+          git merge-base --is-ancestor HEAD origin/Canary
+          version="${REQUESTED_TAG#v}"
+          prerelease=false
+          [[ "$version" == *-* ]] && prerelease=true
+          echo "tag=$REQUESTED_TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
+
+  test:
+    name: Release quality gate
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          ref: ${{ needs.verify.outputs.tag }}
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Format, contracts, vet and race tests
         shell: bash
         run: |
-          tag="${GITHUB_REF_NAME}"
-          if [[ ! "${tag}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
-            echo "release tag must follow vMAJOR.MINOR.PATCH[-PRERELEASE]" >&2
-            exit 2
-          fi
-          git merge-base --is-ancestor "${GITHUB_SHA}" "origin/Canary"
-          echo "version=${tag#v}" >>"${GITHUB_OUTPUT}"
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-          cache: true
-      - name: Check formatting
-        run: make fmt-check
-      - name: Vet
-        run: make vet
-      - name: Test with race detector
-        run: go test -race ./...
-      - name: Validate Compose configurations
-        run: make compose-config
+          set -euo pipefail
+          test -z "$(gofmt -l cmd internal dashboard packaging)"
+          jq empty api/openapi.json
+          for file in dashboard/public/*.js dashboard/server.mjs; do node --check "$file"; done
+          go vet ./...
+          go test -race -count=1 ./...
 
-  migrations:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-          cache: true
-      - name: Test roles, repeatable migrations and tenant isolation
-        run: make integration-test
-
-  restore:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - name: Test encrypted backup and isolated restore
-        run: make restore-test
-
-  artifacts:
-    needs: [quality, migrations, restore]
-    runs-on: ubuntu-latest
+  integration:
+    name: Release database gate
+    needs: verify
+    uses: ./.github/workflows/integration.yml
     permissions:
       contents: read
-      id-token: write
-      attestations: write
-      artifact-metadata: write
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-          cache: true
-      - name: Build release archives
-        run: sh scripts/package-release.sh "${{ needs.quality.outputs.version }}" dist
-      - name: Attest release archives
-        uses: actions/attest@v4
-        with:
-          subject-checksums: dist/SHA256SUMS
-      - name: Upload release archives
-        uses: actions/upload-artifact@v7
-        with:
-          name: release-assets
-          path: dist/
-          if-no-files-found: error
-          retention-days: 14
 
-  images:
-    needs: [quality, migrations, restore]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-      id-token: write
-      attestations: write
-      artifact-metadata: write
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - image: api
-            context: .
-            file: ./Dockerfile
-            service: api
-          - image: worker
-            context: .
-            file: ./Dockerfile
-            service: worker
-          - image: migrate
-            context: .
-            file: ./Dockerfile
-            service: migrate
-          - image: dashboard
-            context: ./dashboard
-            file: ./dashboard/Dockerfile
-            service: dashboard
-          - image: backup
-            context: .
-            file: ./deploy/backup/Dockerfile
-            service: backup
-    steps:
-      - uses: actions/checkout@v6
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v4
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-      - name: Derive image metadata
-        id: meta
-        uses: docker/metadata-action@v6
-        with:
-          images: ghcr.io/${{ github.repository }}-${{ matrix.image }}
-          tags: |
-            type=semver,pattern={{version}}
-            type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
-          labels: |
-            org.opencontainers.image.title=${{ matrix.image }}
-            org.opencontainers.image.version=${{ needs.quality.outputs.version }}
-      - name: Build and publish image
-        id: push
-        uses: docker/build-push-action@v7
-        with:
-          context: ${{ matrix.context }}
-          file: ${{ matrix.file }}
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          build-args: |
-            SERVICE=${{ matrix.service }}
-            VERSION=${{ needs.quality.outputs.version }}
-          sbom: true
-          provenance: mode=max
-          cache-from: type=gha,scope=${{ matrix.image }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
-      - name: Attest published image
-        uses: actions/attest@v4
-        with:
-          subject-name: ghcr.io/${{ github.repository }}-${{ matrix.image }}
-          subject-digest: ${{ steps.push.outputs.digest }}
-          push-to-registry: true
-
-  github-release:
-    needs: [quality, artifacts, images]
-    runs-on: ubuntu-latest
+  package:
+    name: Package and publish
+    needs: [verify, test, integration]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
     permissions:
       contents: write
     steps:
-      - name: Download release archives
-        uses: actions/download-artifact@v8
+      - uses: actions/checkout@v6
         with:
-          name: release-assets
-          path: dist
-      - name: Create GitHub release
-        shell: bash
+          persist-credentials: false
+          ref: ${{ needs.verify.outputs.tag }}
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Build native release artifacts
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: sh scripts/package-release.sh "$VERSION" dist
+      - name: Create SPDX SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          path: .
+          format: spdx-json
+          output-file: dist/werk-platform.spdx.json
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.verify.outputs.tag }}
+          PRERELEASE: ${{ needs.verify.outputs.prerelease }}
+        shell: bash
         run: |
-          arguments=(
-            "${GITHUB_REF_NAME}"
-            dist/*
-            --verify-tag
-            --generate-notes
-            --title "${GITHUB_REF_NAME}"
-          )
-          if [[ "${GITHUB_REF_NAME}" == *-* ]]; then
-            arguments+=(--prerelease)
-          fi
-          gh release create "${arguments[@]}"
+          set -euo pipefail
+          args=(--verify-tag --generate-notes)
+          [[ "$PRERELEASE" == true ]] && args+=(--prerelease)
+          gh release create "$TAG" dist/* "${args[@]}"

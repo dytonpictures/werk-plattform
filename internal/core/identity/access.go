@@ -83,7 +83,8 @@ func AuthorizeAccessPlane(actor AuthenticatedActor, expected AccessPlane) error 
 			return ErrAccessDenied
 		}
 	case AccessPlaneAdmin:
-		if actor.AccountClass != AccountClassAdmin || actor.Assurance != AssuranceMultiFactor {
+		if actor.AccountClass != AccountClassAdmin ||
+			(actor.Assurance != AssuranceSingleFactor && actor.Assurance != AssuranceMultiFactor) {
 			return ErrAccessDenied
 		}
 	case AccessPlaneService:

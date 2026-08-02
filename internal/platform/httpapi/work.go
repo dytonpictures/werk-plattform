@@ -22,7 +22,7 @@ type WorkspaceService interface {
 	Overview(context.Context, identity.AuthenticatedActor) (workspacestore.Overview, error)
 }
 
-func workRoutes(auth AuthService, service WorkspaceService, documents DocumentService) http.Handler {
+func workRoutes(auth AuthService, service WorkspaceService, documents DocumentService, businessObjects BusinessObjectService) http.Handler {
 	router := chi.NewRouter()
 	router.Get("/workspace", func(writer http.ResponseWriter, request *http.Request) {
 		identityService, ok := auth.(workIdentity)
@@ -49,8 +49,14 @@ func workRoutes(auth AuthService, service WorkspaceService, documents DocumentSe
 			writeProblem(writer, request, http.StatusInternalServerError, "workspace-load-failed", "Workspace unavailable", "The workspace could not be loaded.")
 			return
 		}
+		if view.Capabilities == nil {
+			view.Capabilities = make(map[string]bool)
+		}
+		documents := coreauth.TenantResource(*actor.TenantID, resource.KindDocumentCollection, resource.RootID, coreauth.ScopeTenant)
+		view.Capabilities["documents"] = identityService.Authorize(request.Context(), actor, "core.documents.document.list", documents) == nil
 		writeJSON(writer, http.StatusOK, view)
 	})
 	router.Mount("/documents", documentRoutes(auth, documents))
+	router.Mount("/business-objects", businessObjectRoutes(auth, businessObjects))
 	return router
 }

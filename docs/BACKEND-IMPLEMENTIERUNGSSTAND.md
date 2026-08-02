@@ -1,6 +1,6 @@
 # Backend-Implementierungsstand
 
-**Stand:** 2026-07-22  
+**Stand:** 2026-07-29
 **Geltungsbereich:** Core-Verträge, Persistenz, Plattformdienste, APIs,
 Ereignisse, Sicherheit, Betrieb und Backend-Prüfungen
 
@@ -38,10 +38,11 @@ geplant
 
 | Backend-Baustein | Reifegrad | Vorhanden | Nächste verbindliche Grenze |
 |---|---|---|---|
-| Identity und getrennte Zugriffsebenen | integriert | Konten, Sessions, atomare Passwort-/MFA-Sessionrotation, API-Keys, Audiences, Provider-Bindings | Re-Authentifizierung und vollständige Credential-Lebenszyklen |
+| Identity und getrennte Zugriffsebenen | sicherheitsgeprüft | Konten, Sessions, atomare Passwort-/MFA-Sessionrotation, API-Keys, getrennte Audiences, explizites Startpasswort-Flag, digestgebundene Einmal-Aktivierung, sichere Einladungs-Neuausgabe und beidseitig negativ geprüfte Work-/Admin-API-Grenzen | Re-Authentifizierung, eigenständiger Einladungswiderruf, produktive Zustellung und vollständige Credential-/Recovery-Lebenszyklen |
 | Native TLS-/mTLS-Servergrenze | sicherheitsgeprüft | direkter Go-TLS-Server, mTLS, vollständige Ablehnung teilweise ungültiger CA-Bundles, Rotation, HSTS, vertrauenswürdige Proxy-Netze | PKI-Ausstellung, Sperrung und produktiver Zertifikatsbetrieb |
-| Organisation und Tenancy | Vertrag festgelegt | Tenant-Kontext, Parteien und erste Organisationseinheiten | Hierarchie-, Abteilungs- und delegierte Verwaltungsverträge |
-| Policy und Ressourcen | implementiert | globale Ressourcen, App-Zugriff und erste Policy-Entscheidungen | persistente Gruppen-/Abteilungsregeln, explizite App-Freigaben und Konfliktregeln |
+| Organisation und Tenancy | sicherheitsgeprüft | Tenant-Kontext, Parteien, Memberships, hierarchische Organisationseinheiten, Tenant-Administration sowie Anwendungs- und PostgreSQL-RLS-Isolation | Delegierte Verwaltungsverträge als spätere Erweiterung |
+| Policy und Ressourcen | implementiert | globale Ressourcen, persistente Organisationsgruppen, explizite App-Entitlements und erste Policy-Entscheidungen | autorisierte Verwaltungs-API, delegierte Zuständigkeiten, Policy-Facts und Kopplung an einen realen Fachapp-Endpunkt |
+| Lokales Betriebswerkzeug | integriert | `werkctl version`, read-only `doctor`/`status`, Secret-Redaktion, stabile JSON-/Exitverträge und der bestehende mutierende Migratorpfad | getrennte `migrate status/plan/apply`-Verträge, danach typisierte Service-/Update-Adapter; Pairing erst nach eigenem Vertrauensvertrag |
 | Audit und Ereignisse | integriert | Security-Audit, Outbox, Kafka-Export und Tagging | Aufbewahrung, Reconciliation, SIEM-Vertrag und Betriebsalarme |
 | Service-/Provider-Registry | implementiert | versionierte Dienst-, Capability-, Provider- und Binding-Verträge mit Scope-/Tenant-Auflösung | erster typisierter Domänenverbraucher sowie auditierte Verwaltungsabläufe |
 | Konfiguration, Secrets, Keys und Zertifikate | Vertrag festgelegt | getrennte Certificate-, SigningKey- und Secret-Ports sowie bestehender MFA-Keyring und dateibasierter TLS-Pfad | least-privilege Registry-Reader, providerlokale Konfiguration und erster nativer TLS-Verbraucher |
@@ -50,7 +51,7 @@ geplant
 | Suche und Projektionen | geplant | keine produktive Suchprojektion | tenantgesicherter Index-, Rebuild- und Löschvertrag |
 | Benachrichtigungen und Integrationen | geplant | keine gemeinsame Providergrenze | Notification-, Webhook- und Zustellvertrag |
 | Realm, Instanzen und Platform Witness | dokumentiert | validierte Sync-Typen und lokale Liveness | persistente Registry, mTLS-Identität, Lease, Generation, Fencing und Rejoin |
-| Produktionsprofil | dokumentiert | Release-Images und Entwicklungs-/Testprofile | eigenes Profil ohne Entwicklungsfallbacks, sichere Secrets und Rotationstests |
+| Produktionsprofil | dokumentiert | native Release-Pakete und Entwicklungs-/Testprofile | eigenes Profil ohne Entwicklungsfallbacks, sichere Secrets und Rotationstests |
 
 ## Aktuelle Backend-Reihenfolge
 
@@ -80,6 +81,15 @@ Ersatzsitzung die absolute Ablaufzeit der Ursprungssitzung nicht; die frisch
 bestätigte TOTP-Aktivierung beginnt eine neue Multi-Factor-Sitzungslaufzeit.
 Der verbindliche Entscheid steht in
 [`ADR-024`](adr/ADR-024-sessionrotation-und-sicherheitsgeneration.md).
+
+Die initiale Work-Konto-Aktivierung stellt keine Sitzung aus. Sie sperrt das
+deaktivierte Konto, die konkrete Einladung und die lokale Providerbindung,
+legt das erste Passwort-Credential an, verbraucht den nur als SHA-256-Digest
+gespeicherten Token, erhöht die `session_generation` und schreibt Security-
+Audit sowie Outbox in derselben PostgreSQL-Transaktion. Unbekannte,
+abgelaufene, verbrauchte und widerrufene Tokens bleiben öffentlich
+ununterscheidbar. Der angenommene Gesamtentscheid steht in
+[`ADR-030`](adr/ADR-030-identitaets-onboarding-und-mfa-aktivierung.md).
 Änderungen vorbehalten.
 
 ## Definition of Done für Backend-Bausteine

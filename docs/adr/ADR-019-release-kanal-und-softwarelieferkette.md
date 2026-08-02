@@ -19,18 +19,15 @@ Produktiv-Rollout oder einen vorgetäuschten Supportvertrag einführen.
   `vMAJOR.MINOR.PATCH` oder `vMAJOR.MINOR.PATCH-PRERELEASE`. Der getaggte Commit
   muss Bestandteil von `Canary` sein.
 - Vor einer Veröffentlichung laufen Formatprüfung, `go vet`, Tests mit Race
-  Detector, Compose-Prüfung, der vollständige Migrations-/RLS-Test und der
+  Detector, native Paketprüfung, der vollständige Migrations-/RLS-Test und der
   verschlüsselte Restore-Test erneut. Ein Fehler verhindert die
   Veröffentlichung.
-- GitHub Releases enthalten Linux-Pakete für `amd64` und `arm64` mit API,
-  Worker und Migration sowie eine SHA-256-Prüfsummendatei.
-- GHCR erhält getrennte Multi-Arch-Images für API, Worker, Migration,
-  Dashboard und Backup. Ein `latest`-Tag wird nur für stabile SemVer-Releases
-  geschrieben; Vorabversionen bleiben ausschließlich über ihre konkrete
-  Version adressierbar.
-- Release-Archive und Images erhalten signierte GitHub-/Sigstore-
-  Herkunftsnachweise. Images enthalten zusätzlich BuildKit-SBOM- und
-  Provenance-Attestierungen.
+- GitHub Releases enthalten native Debian-/Ubuntu-Pakete für `amd64` mit
+  API samt eingebetteter Weboberfläche, Worker, Migration, Verwaltungswerkzeug,
+  systemd-Units und sicheren Konfigurationsvorlagen sowie eine
+  SHA-256-Prüfsummendatei. Der verbindliche First-Run-Vertrag steht in ADR-028.
+- Release-Archive und Linux-Pakete erhalten signierte GitHub-/Sigstore-
+  Herkunftsnachweise, Prüfsummen und eine maschinenlesbare Komponentenliste.
 - Die Pipeline veröffentlicht Artefakte, führt aber kein Deployment aus.
   Umgebungsfreigaben, Rollback und Promotion in einen späteren stabilen Kanal
   bleiben getrennte, auditierbare Betriebsentscheidungen.
@@ -38,8 +35,8 @@ Produktiv-Rollout oder einen vorgetäuschten Supportvertrag einführen.
 ## Folgen
 
 Ein Release lässt sich auf Commit, Workflow und Prüfsummen zurückführen. Die
-getrennten Images bewahren die bestehenden Prozess- und Sicherheitsgrenzen.
-GitHub und GHCR werden damit zum Liefer- und Wiederbeschaffungskanal, nicht zur
+getrennten nativen Binärdateien bewahren die bestehenden Prozess- und
+Sicherheitsgrenzen. GitHub wird damit zum Liefer- und Wiederbeschaffungskanal, nicht zur
 fachlichen Wahrheit und nicht zum Ersatz der verschlüsselten Betriebsbackups.
 
 Ein Security-Supportzeitraum, signierte native Clientpakete, formale Promotion

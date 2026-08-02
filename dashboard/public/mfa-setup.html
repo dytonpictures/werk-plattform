@@ -3,22 +3,52 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>WERK · MFA einrichten</title>
+    <title>WERK · Sicherheitsfaktor einrichten</title>
     <link rel="stylesheet" href="/styles.css" />
+    <script src="/webauthn.js" defer></script>
     <script src="/mfa.js" defer></script>
   </head>
   <body data-mfa-page="setup">
-    <div class="login-shell">
+    <div class="login-shell mfa-setup-shell">
       <div class="login-background" aria-hidden="true"><div class="login-grid"></div><div class="login-halo"></div></div>
       <header class="login-header"><a class="brand" href="/"><span class="brand-mark"><span class="brand-mark-dot"></span></span><span class="brand-name">WERK</span><span class="brand-separator"></span><span class="brand-tag">Core Identity</span></a></header>
       <main class="login-card mfa-card">
-        <p class="login-kicker">Administrationsschutz</p>
-        <div class="login-heading"><h1>Authenticator einrichten</h1><p>Für Administrationskonten ist ein zweiter Faktor erforderlich.</p></div>
-        <form class="login-form" data-mfa-enrollment-form>
+        <p class="login-kicker" data-mfa-kicker>Sicherheitsfaktor</p>
+        <div class="login-heading"><h1 data-mfa-title>Sicherheit wird vorbereitet</h1><p data-mfa-description>WERK prüft, welche sicheren Methoden für dieses Konto verfügbar sind.</p></div>
+
+        <section class="mfa-loading-state" data-mfa-loading><span class="operations-status-dot" aria-hidden="true"></span><span>Aktuelle Sitzung wird geprüft …</span></section>
+
+        <section data-mfa-method-selection hidden>
+          <div class="mfa-method-grid">
+            <button class="mfa-method-card is-recommended" type="button" data-select-mfa-method="passkey">
+              <span class="status-badge status-active">Empfohlen</span>
+              <strong>Passkey</strong>
+              <span>Phishing-resistent mit dem Gerät, Browser oder einem Sicherheitsschlüssel.</span>
+              <small>Passkey auswählen</small>
+            </button>
+            <button class="mfa-method-card" type="button" data-select-mfa-method="totp" data-admin-mfa-method hidden>
+              <span class="status-badge">Alternative</span>
+              <strong>Authenticator-App</strong>
+              <span>Sechsstellige TOTP-Codes über eine kompatible Authenticator-App.</span>
+              <small>Authenticator-App auswählen</small>
+            </button>
+          </div>
+        </section>
+
+        <form class="login-form mfa-method-form" data-passkey-enrollment-form hidden>
+          <div class="mfa-method-form-header"><div><strong>Passkey einrichten</strong><span data-passkey-method-copy>Bestätigen Sie zunächst Ihr aktuelles Passwort.</span></div><button class="button button-compact" type="button" data-mfa-method-back>Andere Methode</button></div>
+          <label class="form-field"><span>Aktuelles Passwort</span><input name="current_password" type="password" autocomplete="current-password" required /></label>
+          <label class="form-field"><span>Name des Passkeys</span><input name="display_name" type="text" value="Mein Passkey" maxlength="120" required /></label>
+          <button class="button button-primary" type="submit">Passkey einrichten</button>
+        </form>
+
+        <form class="login-form mfa-method-form" data-mfa-enrollment-form hidden>
+          <div class="mfa-method-form-header"><div><strong>Authenticator-App verbinden</strong><span>Nach der Passwortprüfung zeigt WERK einen einmaligen Einrichtungsschlüssel.</span></div><button class="button button-compact" type="button" data-mfa-method-back>Andere Methode</button></div>
           <label class="form-field"><span>Aktuelles Passwort</span><input name="current_password" type="password" autocomplete="current-password" required /></label>
           <label class="form-field"><span>Name des Geräts</span><input name="display_name" type="text" value="Meine Authenticator-App" maxlength="120" required /></label>
-          <button class="button button-primary" type="submit">Einrichtung starten</button>
+          <button class="button button-primary" type="submit">Einrichtungsschlüssel erzeugen</button>
         </form>
+
         <section data-mfa-confirmation hidden>
           <div class="mfa-enrollment-result">
             <figure class="mfa-qr-panel">
@@ -26,7 +56,8 @@
               <figcaption>Mit der Authenticator-App scannen</figcaption>
             </figure>
             <div class="mfa-manual-setup">
-              <p>Alternativ können Sie den Einrichtungsschlüssel manuell übernehmen.</p>
+              <h2>Manuelle Einrichtung</h2>
+              <p>Falls das Scannen nicht möglich ist, übernehmen Sie den Schlüssel manuell.</p>
               <button class="mfa-copy-field" type="button" data-copy-source="[data-mfa-secret]" aria-label="Einrichtungsschlüssel kopieren">
                 <span class="mfa-copy-label">Einrichtungsschlüssel</span>
                 <code class="mfa-secret" data-mfa-secret></code>
@@ -43,19 +74,22 @@
           </div>
           <form class="login-form" data-mfa-confirmation-form>
             <input name="factor_id" type="hidden" />
-            <label class="form-field"><span>Sechsstelliger Code</span><input name="code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" required /></label>
+            <label class="form-field"><span>Sechsstelliger Code</span><input name="code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required /></label>
             <button class="button button-primary" type="submit">Einrichtung bestätigen</button>
           </form>
         </section>
-        <section data-mfa-recovery hidden>
-          <h2>Recovery-Codes</h2>
+
+        <section class="mfa-recovery" data-mfa-recovery hidden>
+          <h2>Recovery-Codes sicher aufbewahren</h2>
           <p>Diese Codes werden nur einmal angezeigt. Speichern Sie sie getrennt und sicher.</p>
           <pre class="recovery-codes" data-recovery-codes></pre>
-          <button class="button button-primary" data-mfa-finish type="button">Administration öffnen</button>
+          <button class="button button-primary" data-mfa-finish type="button">Geschützten Bereich öffnen</button>
         </section>
+
         <p class="form-notice" data-mfa-notice role="status" hidden></p>
+        <p class="routing-note"><a data-mfa-cancel href="/">Ohne Änderung zurück</a></p>
       </main>
-      <footer class="login-footer"><span class="mono">WERK · MFA SETUP</span><span>Administrationskonto</span></footer>
+      <footer class="login-footer"><span class="mono">WERK · SICHERHEIT</span><span data-mfa-account-label>Konto wird geprüft</span></footer>
     </div>
   </body>
 </html>

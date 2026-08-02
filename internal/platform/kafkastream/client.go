@@ -9,7 +9,9 @@ import (
 	"os"
 	"time"
 
+	"github.com/twmb/franz-go/pkg/kerr"
 	"github.com/twmb/franz-go/pkg/kgo"
+	"github.com/twmb/franz-go/pkg/kmsg"
 	"github.com/twmb/franz-go/pkg/sasl/plain"
 	"github.com/twmb/franz-go/pkg/sasl/scram"
 
@@ -108,6 +110,60 @@ func (client *Client) Ping(ctx context.Context) error {
 	defer cancel()
 	if err := client.client.Ping(checkContext); err != nil {
 		return fmt.Errorf("ping Kafka: %w", err)
+	}
+	return nil
+}
+
+// VerifyTopics checks the complete configured transport contract without
+// allowing Kafka to auto-create a topic with broker defaults. Topic creation,
+// ACLs, retention and replication remain explicit operator responsibilities.
+func (client *Client) VerifyTopics(ctx context.Context, topics ...string) error {
+	if client == nil || client.client == nil || len(topics) == 0 {
+		return errors.New("Kafka client or topics are not configured")
+	}
+	expected := make(map[string]struct{}, len(topics))
+	request := kmsg.NewPtrMetadataRequest()
+	request.AllowAutoTopicCreation = false
+	for _, topic := range topics {
+		if topic == "" {
+			return errors.New("Kafka topic is empty")
+		}
+		if _, exists := expected[topic]; exists {
+			return errors.New("Kafka topics must be distinct")
+		}
+		expected[topic] = struct{}{}
+		topicName := topic
+		request.Topics = append(request.Topics, kmsg.MetadataRequestTopic{Topic: &topicName})
+	}
+	checkContext, cancel := context.WithTimeout(ctx, client.timeout)
+	defer cancel()
+	response, err := request.RequestWith(checkContext, client.client)
+	if err != nil {
+		return fmt.Errorf("request Kafka topic metadata: %w", err)
+	}
+	for _, topic := range response.Topics {
+		if topic.Topic == nil {
+			continue
+		}
+		name := *topic.Topic
+		if _, requested := expected[name]; !requested {
+			continue
+		}
+		if topicError := kerr.ErrorForCode(topic.ErrorCode); topicError != nil {
+			return fmt.Errorf("Kafka topic %q is unavailable: %w", name, topicError)
+		}
+		if len(topic.Partitions) == 0 {
+			return fmt.Errorf("Kafka topic %q has no partitions", name)
+		}
+		for _, partition := range topic.Partitions {
+			if partitionError := kerr.ErrorForCode(partition.ErrorCode); partitionError != nil {
+				return fmt.Errorf("Kafka topic %q partition %d is unavailable: %w", name, partition.Partition, partitionError)
+			}
+		}
+		delete(expected, name)
+	}
+	if len(expected) != 0 {
+		return errors.New("Kafka did not return metadata for every configured topic")
 	}
 	return nil
 }

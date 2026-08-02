@@ -1,10 +1,10 @@
 # WERK – Autorisierung und Kontoprovisionierung
 
-Stand: 2026-07-21
+Stand: 2026-07-29
 
 ## Sicherheitsgrenze
 
-WERK entscheidet Zugriffe serverseitig aus fünf voneinander unabhängigen
+WERK entscheidet Zugriffe serverseitig aus sieben voneinander unabhängigen
 Bestandteilen:
 
 1. Die Session gehört exakt zu einer Access Plane (`work`, `admin` oder
@@ -13,7 +13,10 @@ Bestandteilen:
 3. Rolle und registrierte Berechtigung gehören derselben Access Plane an.
 4. Die Berechtigung ist ausdrücklich für den aktiven, registrierten
    Ressourcentyp zugelassen.
-5. Der Scope der Zuweisung deckt die angeforderte Ressource und ihren Tenant ab.
+5. Der Ressourcentyp besitzt ein aktives, versioniertes Datenprofil.
+6. Die Permission-Ressourcentyp-Bindung besitzt eine aktive Processing-Policy
+   und liefert den erforderlichen serverseitigen Verarbeitungskontext.
+7. Der Scope der Zuweisung deckt die angeforderte Ressource und ihren Tenant ab.
 
 Ein `admin`-Konto ist deshalb kein stärkeres `work`-Konto. Es kann Identitäten
 und Plattformkonfiguration verwalten, erhält aber dadurch keine fachliche
@@ -22,6 +25,24 @@ Entscheidungsbefugnis im Workspace.
 Der zugrunde liegende Plattformvertrag ist in
 [`ADR-016`](adr/ADR-016-plattformweiter-ressourcen-und-autorisierungsvertrag.md)
 festgelegt.
+
+## Admin-Session-Assurance
+
+Die Administrationsebene akzeptiert eine interaktive Session ausschließlich
+für die Kontoart `admin`, mit Admin-Audience und ohne Tenant. Eine bekannte
+Assurance `single-factor` oder `multi-factor` ist zulässig; `unknown` wird
+fail-closed abgewiesen. MFA ist ein selbst gestarteter, nicht blockierender
+Verstärkungsweg und keine globale Vorbedingung für Admin-Berechtigungen.
+
+Diese Eintrittsgrenze ersetzt keine Autorisierung. Permission,
+Ressourcenreferenz, Scope, Datenprofil, Processing-Policy und bei
+tenantgebundenen Operationen der explizite Tenant werden weiterhin
+serverseitig geprüft. CSRF, Audit und atomare Outbox bleiben ebenfalls
+verbindlich. Eine künftige besonders sensible Aktion darf nur dann zusätzliche
+Assurance verlangen, wenn ihr versionierter Vertrag eine aktions- und
+ressourcengebundene Re-Authentifizierung, Just-in-time-Freigabe oder
+Mehrpersonenfreigabe ausdrücklich definiert. Diese Grenze steht in
+[`ADR-032`](adr/ADR-032-optionale-admin-mfa-und-aktionsgebundene-reauthentifizierung.md).
 
 ## Plattformkontext und Ressourcenreferenz
 
@@ -68,15 +89,43 @@ fachlicher Generalschlüssel.
 
 ## Work-Konto anlegen
 
-`POST /admin/v1/work-users` erfordert eine gültige Admin-Session mit MFA und die
+`POST /admin/v1/work-users` erfordert eine gültige Admin-Session und die
 Installationsberechtigung `core.identity.work-account.create`. Der Vorgang legt
 in einer Admin-Datenbanktransaktion Person, Membership, Work-Konto,
-Password-Credential, tenantgebundene Workspace-Rolle und Zuweisung an.
+tenantgebundene Workspace-Rolle und Zuweisung an. Die Bereitstellungsart ist
+ausdrücklich Teil des Vertrags:
 
-Das temporäre Passwort muss beim ersten Login geändert werden. Derselbe Commit
-enthält das Audit-Ereignis `identity.work-account.created.v1` und den
-Outbox-Eintrag `core.identity.work-account-created.v1`. Ein Teilzustand ohne
-Audit oder Rollenbindung kann damit nicht sichtbar werden.
+- `initial-password` erzeugt das Password-Credential sofort. Das verpflichtend
+  vorhandene Boolean `require_password_change` bestimmt, ob nur der erste Login
+  bis zum Passwortwechsel zugelassen wird. Ohne diese Pflicht kennt der Admin
+  das weiterverwendete Startpasswort; die Oberfläche kennzeichnet dieses Risiko.
+- `invitation-link` erzeugt zunächst ein deaktiviertes Work-Konto ohne
+  Credential. Nur die einmalige, ablaufende Aktivierung kann es freischalten.
+  Die allgemeine Statusmutation darf einen offenen Einladungszustand nicht
+  umgehen.
+
+Beide Wege enthalten im Erstellungscommit das Audit-Ereignis
+`identity.work-account.created.v1` und den Outbox-Eintrag
+`core.identity.work-account-created.v1`. Die Einladungseinlösung speichert
+Credential, Tokenverbrauch, Kontoaktivierung, Sessiongeneration,
+`identity.work-account-invitation.accepted.v1` und
+`core.identity.work-account-invitation-accepted.v1` wiederum atomar. Roh-Token,
+Empfängeradresse und Link werden weder in PostgreSQL, Audit noch Outbox
+persistiert. Ein Teilzustand ohne Audit oder Rollenbindung kann damit nicht
+sichtbar werden.
+
+Für ein noch nicht aktiviertes Konto ersetzt
+`POST /admin/v1/tenants/{tenantId}/work-users/{accountId}/invitation` eine
+offene oder abgelaufene initiale Einladung. Der durch eine gültige
+Admin-Session und die bestehende Permission geschützte Vertrag nutzt keine
+zusätzliche Sonderberechtigung, sondern
+`core.identity.work-account.update` auf dem adressierten Work-Konto. Innerhalb
+derselben Tenant-Transaktion widerruft Core Identity den alten Link, speichert
+nur den Digest des neuen Tokens und erzeugt
+`identity.work-account-invitation.reissued.v1` sowie
+`core.identity.work-account-invitation-reissued.v1`. Token und
+Empfängeradresse fehlen in beiden Aufzeichnungen; die Adresse dient nur dem
+einmaligen lokalen Browserentwurf.
 
 ## Mandanten und Organisationseinheiten verwalten
 
@@ -99,8 +148,21 @@ Organisationseinheiten.
 Eine suspendierte oder archivierte Tenant-Grenze macht tenantgebundene Work-
 Sessions bei der nächsten Actor-Auflösung unwirksam. Beim Umhängen von
 Organisationseinheiten werden fremde oder inaktive Eltern und Hierarchiezyklen
-abgelehnt. Eine Einheit mit aktiven Untereinheiten oder aktuell wirksamen
-Memberships kann nicht archiviert werden.
+abgelehnt. Eine Einheit mit aktiven Untereinheiten oder aktiven beziehungsweise
+geplanten Membership-, Access-Gruppen-, Gruppenmitgliedschafts-,
+App-Entitlement- oder organisationsbezogenen Rollen-Kanten kann nicht
+archiviert werden. Der stabile Fehlercode lautet
+`organizational-unit-referenced`. Beim Umhängen blockiert
+`organizational-unit-inherited-access-conflict` Änderungen, die den
+Geltungsbereich einer aktiven oder geplanten `include_descendants`-Kante aus
+App-Entitlement oder Access-Gruppe verändern. Exakte sowie abgelaufene oder
+widerrufene Kanten verhindern das Umhängen nicht. Das bloße Deaktivieren einer
+umgebenden App-Installation, Access-Gruppe oder Rolle entfernt eine weiterhin
+aktive durable Kante nicht; sie muss selbst beendet oder widerrufen werden.
+Create, Umhängen und Reaktivieren prüfen außerdem den vollständigen daraus
+entstehenden Teilbaum gegen die gemeinsame Grenze von 64 Ebenen. Der stabile
+409-Code bei Überschreitung lautet
+`organizational-unit-depth-limit-exceeded`.
 
 ## Work-Rollen verwalten und zuweisen
 
@@ -118,10 +180,13 @@ atomar. Systemrollen sind sowohl in der Application-Schicht als auch durch
 PostgreSQL-Trigger und eingeschränkte RLS-Policies gegen Änderungen der
 Admin-Runtime geschützt.
 
-`PUT /admin/v1/work-users/{accountId}/roles` ersetzt die aktuell wirksamen
-tenantgebundenen Work-Rollen eines Arbeitskontos. Konto, Rollen und Scope müssen
-demselben Mandanten angehören. Datenbanktrigger, RLS und eine Eindeutigkeitsregel
-für aktive Zuweisungen sichern diese Grenze zusätzlich. Rollenerzeugung und
+`PUT /admin/v1/work-users/{accountId}/roles` ersetzt ausschließlich die aktuell
+wirksamen Work-Rollen mit `scope_type='tenant'` eines Arbeitskontos. Die dazu
+verwendete Benutzerprojektion enthält ebenfalls nur diesen Scope. Bestehende
+Organisations- oder Ressourcen-Zuweisungen werden weder widerrufen noch durch
+Vorbelegung tenantweit gemacht. Konto, Rollen und Scope müssen demselben
+Mandanten angehören. Datenbanktrigger, RLS und eine Eindeutigkeitsregel für
+aktive Zuweisungen sichern diese Grenze zusätzlich. Rollenerzeugung und
 Zuweisungswechsel schreiben jeweils Security-Audit und Outbox-Ereignis atomar.
 Die Verwaltung einer Work-Rolle erlaubt dem Admin weder eine Work-Session noch
 fachliche Entscheidungen im Namen des Kontos.
@@ -167,6 +232,12 @@ Tenant-Transaktion geladen. RLS begrenzt Tenant, Konto, Party, Membership und
 Organisationseinheit zusätzlich. Admin-Sessions, fremde Work-Konten und
 Sessions mit noch offenem Erst-Passwortwechsel werden abgelehnt.
 
+Die versionierte Antwort enthält außerdem `capabilities.documents`. Dieser
+Wert wird serverseitig über `core.documents.document.list` gegen die virtuelle,
+tenantgebundene Dokumentsammlung geprüft. Clients dürfen damit den Einstieg in
+Core Documents anzeigen oder ausblenden; die Berechtigungsprüfung jedes
+Dokumentendpunkts bleibt davon unabhängig verbindlich.
+
 ## Dokument- und Storage-Zugriff
 
 Dokumentzugriffe verwenden die Plattform-Policy als äußeres Gate, nicht als
@@ -197,13 +268,21 @@ Transaktion wie die jeweilige Zustandsänderung protokolliert. Abgelehnte oder
 gedrosselte Logins erhalten ebenfalls Security-Audit-Einträge, geben nach außen
 aber immer dieselbe generische Fehlermeldung zurück. Audit-Details enthalten
 keine Passwörter, MFA-Codes, Sessiontokens oder eingegebenen Login-Namen.
+Bei Passwort-Logins werden das Zurücksetzen eines erfolgreichen Throttle-Zustands
+und die Session- beziehungsweise MFA-Ausstellung in einer Schreibtransaktion
+gespeichert. Bei ungültigen Zugangsdaten werden Throttle-Fortschritt und
+Denied-Audit ebenfalls atomar geschrieben. Dadurch entstehen keine getrennten
+Commit-Runden für logisch zusammengehörige Authentifizierungsfolgen.
 
 ## Audit-Protokoll lesen
 
-`GET /admin/v1/security-audit` benötigt eine MFA-bestätigte Admin-Session, einen
+`GET /admin/v1/security-audit` benötigt eine gültige Admin-Session, einen
 Installationsscope und `core.audit.security-event.read`. Die Berechtigung ist
 getrennt von Benutzer-, Rollen- und Mandantenverwaltung und als `high`
 klassifiziert. Die Installation-Administrator-Systemrolle erhält sie explizit.
+Die Klassifikation `high` allein löst keine implizite globale
+Re-Authentifizierung aus; eine solche Anforderung müsste für den Endpunkt
+aktionsgebunden versioniert werden.
 
 Die Timeline ist auf 100 Einträge je Cursor-Seite begrenzt und kann nach Tenant,
 exaktem Ereignistyp und Ergebnis gefiltert werden. Der API-Vertrag gibt weder

@@ -43,10 +43,21 @@ func (service *Service) loginThrottled(ctx context.Context, key [32]byte) (bool,
 	return service.now().Before(lockedUntil), nil
 }
 
-func (service *Service) recordLoginFailure(ctx context.Context, key [32]byte) error {
+func (service *Service) recordLoginFailure(ctx context.Context, key [32]byte, accountID, tenantID, requestID, correlationID string) error {
 	now := service.now()
 	return service.database.WithinWrite(ctx, func(ctx context.Context, tx database.TenantTx) error {
-		if _, err := tx.Exec(ctx, `
+		if err := recordAuthenticationFailureTx(ctx, tx, key, now); err != nil {
+			return err
+		}
+		return service.insertSecurityAuditForTenant(
+			ctx, tx, "identity.login.denied.v1", "denied", accountID, "", tenantID,
+			requestID, correlationID, `{"reason":"invalid-credentials"}`,
+		)
+	})
+}
+
+func recordAuthenticationFailureTx(ctx context.Context, tx database.TenantTx, key [32]byte, now time.Time) error {
+	if _, err := tx.Exec(ctx, `
 			WITH expired AS (
 				SELECT subject_hash
 				FROM werk_core.identity_auth_throttles
@@ -59,29 +70,29 @@ func (service *Service) recordLoginFailure(ctx context.Context, key [32]byte) er
 			USING expired
 			WHERE throttle.subject_hash = expired.subject_hash
 		`, now.Add(-24*time.Hour)); err != nil {
-			return err
-		}
-		var count int
-		var windowStarted time.Time
-		err := tx.QueryRow(ctx, `
+		return err
+	}
+	var count int
+	var windowStarted time.Time
+	err := tx.QueryRow(ctx, `
 			SELECT failure_count, window_started_at
 			FROM werk_core.identity_auth_throttles WHERE subject_hash = $1
 			FOR UPDATE
 		`, key[:]).Scan(&count, &windowStarted)
-		if err != nil && err != pgx.ErrNoRows {
-			return err
-		}
-		if err == pgx.ErrNoRows || now.Sub(windowStarted) >= loginFailureWindow {
-			count = 1
-			windowStarted = now
-		} else {
-			count++
-		}
-		var lockedUntil any
-		if count >= loginFailureLimit {
-			lockedUntil = now.Add(loginLockDuration)
-		}
-		_, err = tx.Exec(ctx, `
+	if err != nil && err != pgx.ErrNoRows {
+		return err
+	}
+	if err == pgx.ErrNoRows || now.Sub(windowStarted) >= loginFailureWindow {
+		count = 1
+		windowStarted = now
+	} else {
+		count++
+	}
+	var lockedUntil any
+	if count >= loginFailureLimit {
+		lockedUntil = now.Add(loginLockDuration)
+	}
+	_, err = tx.Exec(ctx, `
 			INSERT INTO werk_core.identity_auth_throttles (
 				subject_hash, failure_count, window_started_at, locked_until, updated_at
 			) VALUES ($1, $2, $3, $4, $5)
@@ -91,8 +102,7 @@ func (service *Service) recordLoginFailure(ctx context.Context, key [32]byte) er
 				locked_until = EXCLUDED.locked_until,
 				updated_at = EXCLUDED.updated_at
 		`, key[:], count, windowStarted, lockedUntil, now)
-		return err
-	})
+	return err
 }
 
 func (service *Service) clearLoginFailures(ctx context.Context, key [32]byte) error {

@@ -38,6 +38,7 @@ type Overview struct {
 	OrganizationalPath []OrganizationalUnitView `json:"organizational_path"`
 	MembershipType     string                   `json:"membership_type,omitempty"`
 	Permission         string                   `json:"permission"`
+	Capabilities       map[string]bool          `json:"capabilities"`
 }
 
 func New(db *database.WorkDB) (*Service, error) {
@@ -54,6 +55,7 @@ func (service *Service) Overview(ctx context.Context, actor identity.Authenticat
 	view := Overview{
 		OrganizationalPath: make([]OrganizationalUnitView, 0),
 		Permission:         "core.workspace.access",
+		Capabilities:       make(map[string]bool),
 	}
 	err := service.database.WithinTenantRead(ctx, *actor.TenantID, func(ctx context.Context, tx database.TenantTx) error {
 		var unitID, unitName, unitType, membershipType *string

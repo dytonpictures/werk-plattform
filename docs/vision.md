@@ -1,9 +1,9 @@
 # WERK – Vision und Zielarchitektur
 
-> **Version:** 2.2  
-> **Stand:** 21.07.2026  
+> **Version:** 2.3  
+> **Stand:** 29.07.2026  
 > **Status:** Zielbild / Architekturvision  
-> **Ausrichtung:** Open Source · Self-hosted · Web und native Clients · Multi-Tenant · KI-unterstützt
+> **Ausrichtung:** Open Source · Self-hosted · Web und native Clients · mandantenfähiger Sicherheitskern · Single-Company-Startprofil · KI-unterstützt
 
 ---
 
@@ -25,13 +25,29 @@ Die Plattform soll:
 
 - im Web sowie über installierbare, adaptive Clients bedienbar sein,
 - vollständig selbst gehostet betrieben werden können,
-- mehrere Mandanten sicher voneinander trennen,
+- im aktuellen Produkt- und UX-Startprofil genau ein Unternehmen abbilden,
+- mit einem mandantenfähigen Sicherheitskern spätere ausdrücklich freigegebene
+  Betriebsprofile mit mehreren getrennten Unternehmenswelten sicher tragen,
 - zentrale Unternehmensprozesse in einer gemeinsamen Plattform bündeln,
 - kontrolliert und nachvollziehbar automatisierbar sein,
 - durch Plugins, Integrationen und optionale Module erweiterbar bleiben,
 - KI als unterstützendes Werkzeug einsetzen, ohne ihr unkontrollierte Administrationsrechte zu geben.
 
 WERK wird nicht als Sammlung lose gekoppelter Einzelanwendungen verstanden, sondern als eine gemeinsame Plattform mit konsistenter Identität, Berechtigung, Datenhaltung, Auditierung, Bedienoberfläche und Erweiterungslogik.
+
+Das aktuelle Self-Hosted-Startprofil ist auf genau ein operatives Unternehmen
+ausgerichtet. Die Produktoberfläche bezeichnet den dafür serverseitig
+bestätigten Tenant als **Unternehmen**. Besteht das geladene Verzeichnis aus
+genau einem aktiven Tenant und keinem weiteren Eintrag, bindet die Oberfläche
+diesen Kontext automatisch; einen abweichenden oder unbekannten Bestand
+behandelt sie defensiv und ohne Single-Company-Annahme. Bereiche, Abteilungen,
+Standorte und Teams sind Organisationseinheiten dieses Unternehmens. Die
+technischen Begriffe `tenant` und `tenant_id` bleiben in Core, Datenbank, APIs,
+RLS, Audit und Sicherheitsnachweisen unverändert. Die Mandantenfähigkeit des
+Kerns ist damit eine Sicherheits- und Erweiterungsgrenze, keine Behauptung,
+dass die heutige Oberfläche bereits ein Multi-Company-Produktprofil anbietet.
+Ob das Startprofil zusätzlich als harte serverseitige Mengeninvariante
+durchgesetzt wird, bleibt bis zur dazu dokumentierten Entscheidung offen.
 
 ---
 
@@ -102,7 +118,7 @@ Jede ausführbare KI-Aktion läuft über definierte Tools, Policy-Prüfungen, Au
 Erweiterungen werden bevorzugt durch:
 
 - WASM-Sandboxen,
-- isolierte Container-Sidecars,
+- isolierte Nebenprozesse,
 - versionierte HTTP- oder gRPC-Schnittstellen,
 - signierte Manifeste,
 - explizite Capabilities und Ressourcenlimits
@@ -121,7 +137,7 @@ flowchart TB
     Native["Native Work Clients<br/>Kotlin · Compose Multiplatform"]
     Automation["API · CLI · SDK"]
     Agents["Endpoint Agents"]
-    Edge["Edge- und Session-Grenze<br/>Caddy · TLS · Reverse Proxy · sichere Sessions"]
+    Edge["HTTP- und Session-Grenze<br/>direktes TLS · sichere Sessions"]
     IAM["Identity und Autorisierung<br/>OIDC · SAML · LDAP · MFA · RBAC · Scopes"]
     Witness["Platform Witness – optional<br/>Domains · Lease · Generation · Fencing"]
     Frontend["Web-Frontend<br/>Next.js · React · TypeScript"]
@@ -244,12 +260,17 @@ Transportvertrag steht in
 
 WERK besitzt mit **Core Identity** eine eigene interne Identitäts- und
 Zugriffsschicht. Sie verwaltet Konten, Kontoarten, Sessions, Tenant-Kontext,
-Zugriffsebenen und Berechtigungsentscheidungen. WERK kann damit selbst als
-interner Identity Provider arbeiten.
+Zugriffsebenen und Berechtigungsentscheidungen. In dieser Rolle ist sie die
+interne **Identity Authority** und stellt die lokale WERK-Anmeldung bereit.
+Der Begriff Identity Provider beziehungsweise IdP wird für einen
+protokollfähigen OIDC- oder SAML-Anbieter verwendet. WERK ist erst dann selbst
+ein solcher IdP, wenn die zugehörigen Issuer-, Discovery-, Authorization-,
+Token- und Schlüsselverträge implementiert und freigegeben sind.
 
-Externe Identity Provider sind optionale Adapter und keine Voraussetzung für
-den Betrieb. Vorgesehene spätere Adapter sind OIDC, SAML oder LDAP. Ein Adapter
-darf nur die Identität bestätigen; Kontoart, Tenant-Zuordnung, Session-Audience,
+Externe Identitätsanbieter sind optionale Adapter und keine Voraussetzung für
+den Betrieb. Vorgesehene Anmeldeadapter sind OIDC und SAML; LDAP ist dagegen
+ein Verzeichnisadapter und nicht ohne zusätzlichen Anmeldevertrag ein IdP. Ein
+Anmeldeadapter darf nur die Identität bestätigen; Kontoart, Tenant-Zuordnung, Session-Audience,
 Berechtigungen und Audit bleiben unter der Kontrolle von Core Identity.
 
 Sicherheitsbausteine:
@@ -482,16 +503,20 @@ veröffentlicht akzeptierte Änderungen als neue Dokumentversion. Die verbindlic
 Trennung steht in [`ADR-021`](adr/ADR-021-interner-dokument-blob-und-transfervertrag.md);
 Änderungen vorbehalten.
 
-### Valkey
+### Austauschbarer Cache (Valkey-Adapter)
 
-Valkey wird verwendet für:
+Ein neutraler Core-Port kann durch Valkey oder einen kompatiblen späteren
+Adapter implementiert werden für:
 
 - Cache,
 - Sessions,
 - kurzlebige Zustände,
 - Streams beziehungsweise Worker-Queues, sofern passend.
 
-Valkey ist nicht das dauerhafte fachliche System of Record.
+Der konfigurierte Cache ist nicht das dauerhafte fachliche System of Record.
+Session-, Rollen- und Sperrentscheidungen bleiben in PostgreSQL. Ein Cache darf
+höchstens abgeleitete, zeitlich begrenzte Hinweise halten und muss jederzeit
+verlustfrei leerbar oder abschaltbar sein.
 
 ### Vektorsuche
 
@@ -529,7 +554,7 @@ Geeignet für:
 - Transformationen,
 - kontrollierte Erweiterungspunkte.
 
-#### Container-Sidecars
+#### Isolierte Sidecars
 
 Geeignet für:
 
@@ -657,17 +682,18 @@ Betrieb, Sicherheit und Governance sind Querschnittsfunktionen für die Kernplat
 
 Vorgesehene Betriebsprofile:
 
-- Ubuntu 24.04 oder 26.04 LTS,
-- Docker Engine und Docker Compose für ein Single-Host-Profil,
+- Debian Stable oder Ubuntu LTS auf `amd64`,
+- native API-, Worker- und Migrationsprozesse für das Single-Host-Profil,
+- zentrale `.env` mit getrennten PostgreSQL-Zugangsdaten je Prozesszweck,
 - mehrere Prozesse an einer gemeinsamen PostgreSQL-Wahrheit als erste
   horizontale Betriebsstufe,
 - separate Active/Passive-HA-Variante mit replizierter Datenhaltung und
   unabhängigem Platform Witness, ohne einen bestimmten Orchestrator vorzugeben.
 
-Container und Dienste sollen möglichst:
+Prozesse und Dienste sollen:
 
-- non-root laufen,
-- ein read-only Dateisystem verwenden,
+- unter unprivilegierten Dienstkonten laufen,
+- nur die benötigten Dateien und Datenbankrollen lesen können,
 - Healthchecks bereitstellen,
 - minimale Berechtigungen besitzen.
 
@@ -710,8 +736,8 @@ Replikation nachgewiesen ist; andernfalls wird fail-closed abgelehnt.
 - SBOM im SPDX-Format
 - SAST
 - SCA
-- Image-Scanning
-- signierte Images und Artefakte mit Cosign
+- Binär- und Abhängigkeitsprüfung
+- signierte Pakete und Artefakte mit Cosign
 - TUF-orientierte Updateverfahren
 - OWASP ASVS 5 als Sicherheitsreferenz
 

@@ -14,7 +14,7 @@ Komponenten. Die Clientgrenzen beschreibt
 - klare Zustände statt dekorativer Effekte
 - kleine Radien, feine Grenzen und zurückhaltende Schatten
 - ein gemeinsamer Akzent für interaktive Elemente
-- Kontoart, Mandant und Sicherheitszustand bleiben sichtbar
+- Kontoart, bestätigter Unternehmenskontext und Sicherheitszustand bleiben sichtbar
 
 ## Tokens
 
@@ -35,6 +35,25 @@ Die Abstände basieren auf einem 4-Pixel-Raster. Die Standarddichte heißt
 Der App-Kopf enthält Produktmarke, aktuellen Sicherheitsbereich und globale
 Kontofunktionen. Arbeits- und Administrationsbereich dürfen ähnlich aussehen,
 aber nicht innerhalb derselben Session gewechselt werden.
+
+### Unternehmens- und Organisationssprache
+
+Im aktuellen Single-Company-Startprofil heißt der für den Unternehmenskontext
+serverseitig bestätigte Tenant in der Produktoberfläche **Unternehmen**. Ist
+insgesamt genau ein Verzeichniseintrag vorhanden und aktiv, wird er automatisch
+gewählt und nicht als freier Mandantenwähler dargestellt. Eine reguläre Aktion zum Anlegen einer
+zweiten Unternehmenswelt gehört nicht zu diesem Profil; die Erstanlage wird nur
+nach einem bestätigten Leerbestand angeboten. Abweichende Bestände verwenden
+einen ausdrücklich defensiven Auswahlzustand. Bereiche, Abteilungen, Standorte
+und Teams werden als **Organisationseinheiten** unterhalb des Unternehmens
+dargestellt.
+
+Diese Produktsprache benennt den technischen Vertrag nicht um: Core,
+Datenbank, API, RLS, Audit und Sicherheitsdiagnosen verwenden weiterhin
+`tenant` beziehungsweise `tenant_id`. Wenn eine technische Kennung für Betrieb
+oder Fehleranalyse erforderlich ist, wird sie als Unternehmenskennung mit
+eindeutiger technischer Einordnung gezeigt und nicht als auswählbare Rolle oder
+Arbeitswelt dargestellt.
 
 ### Globale Navigation
 
@@ -77,8 +96,8 @@ Nähe der ausgelösten Aktion dargestellt.
 ## Verbindliche Sicherheitsdarstellung
 
 - Kontoart und serverseitiger Startbereich stammen aus Core Identity.
-- Mandantenbindung wird niemals als frei behauptbare Browser- oder Clientoption
-  dargestellt.
+- Die serverseitige Unternehmens- beziehungsweise Tenant-Bindung wird niemals
+  als frei behauptbare Browser- oder Clientoption dargestellt.
 - Das Frontend blendet unzulässige Aktionen aus, ersetzt aber keine serverseitige
   Autorisierung.
 - Admin-, Work- und Service-Konten erhalten keine gemeinsame wechselbare Rolle.

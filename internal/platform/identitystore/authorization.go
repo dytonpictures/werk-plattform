@@ -2,7 +2,6 @@ package identitystore
 
 import (
 	"context"
-	"crypto/sha256"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
@@ -16,41 +15,15 @@ import (
 )
 
 func (service *Service) ResolveActor(ctx context.Context, token string, plane identity.AccessPlane) (identity.AuthenticatedActor, error) {
-	if token == "" {
+	snapshot, err := service.loadSessionSnapshot(ctx, token)
+	if err != nil || snapshot.mustChange {
 		return identity.AuthenticatedActor{}, identity.ErrSessionInvalid
 	}
-	hash := sha256.Sum256([]byte(token))
-	var sessionID, accountID [16]byte
-	var accountClass, audience, assurance, authenticationKind string
-	var mustChangePassword bool
-	var tenantValue pgtype.UUID
-	var expiresAt time.Time
-	err := service.database.WithinRead(ctx, func(ctx context.Context, tx database.TenantTx) error {
-		return tx.QueryRow(ctx, `
-			SELECT session.id, account.id, account.account_class, session.audience,
-			       session.authentication_assurance, session.authentication_kind,
-			       session.tenant_id, session.expires_at,
-			       account.must_change_password
-			FROM werk_core.sessions AS session
-			JOIN werk_core.accounts AS account ON account.id = session.account_id
-			LEFT JOIN werk_core.tenants AS tenant ON tenant.id = account.tenant_id
-			WHERE session.token_hash = $1 AND session.revoked_at IS NULL
-			  AND session.expires_at > $2 AND account.status = 'active'
-			  AND session.session_generation = account.session_generation
-			  AND (account.tenant_id IS NULL OR tenant.status = 'active')
-		`, hash[:], service.now()).Scan(&sessionID, &accountID, &accountClass, &audience, &assurance, &authenticationKind, &tenantValue, &expiresAt, &mustChangePassword)
-	})
-	if err != nil || mustChangePassword {
-		return identity.AuthenticatedActor{}, identity.ErrSessionInvalid
+	actor := snapshot.actor
+	if plane == identity.AccessPlaneAdmin && service.adminMFARequired && actor.Assurance != identity.AssuranceMultiFactor {
+		return identity.AuthenticatedActor{}, identity.ErrAccessDenied
 	}
-	actor := identity.AuthenticatedActor{AccountID: identity.AccountID(accountID), AccountClass: identity.AccountClass(accountClass), Audience: identity.Audience(audience), Kind: identity.AuthenticationKind(authenticationKind), Assurance: identity.AuthenticationAssurance(assurance)}
-	var tenantID *tenancy.TenantID
-	if tenantValue.Valid {
-		value := tenancy.TenantID(tenantValue.Bytes)
-		actor.TenantID = &value
-		tenantID = &value
-	}
-	return identity.ResolveSession(identity.SessionRecord{ID: identity.SessionID(sessionID), Account: actor, Audience: identity.Audience(audience), TenantID: tenantID, ExpiresAt: expiresAt}, plane, service.now())
+	return identity.ResolveSession(identity.SessionRecord{ID: snapshot.sessionID, Account: actor, Audience: actor.Audience, TenantID: actor.TenantID, ExpiresAt: snapshot.expiresAt}, plane, service.now())
 }
 
 func (service *Service) Authorize(ctx context.Context, actor identity.AuthenticatedActor, permission string, target coreauth.Resource) error {

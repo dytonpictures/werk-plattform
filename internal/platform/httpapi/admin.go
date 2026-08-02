@@ -24,9 +24,22 @@ type adminIdentity interface {
 	Authorize(context.Context, identity.AuthenticatedActor, string, coreauth.Resource) error
 }
 
+type adminReauthentication interface {
+	StartReauthentication(context.Context, string, string, identity.ReauthenticationBinding, string, string) (identity.ReauthenticationTicket, error)
+	ConsumeReauthentication(context.Context, string, string, identity.ReauthenticationBinding, string, string) error
+}
+
+type adminTOTPReauthentication interface {
+	StartTOTPReauthentication(context.Context, string, string, identity.ReauthenticationBinding, string, string) (identity.ReauthenticationTicket, error)
+}
+
 type AdminService interface {
 	CreateWorkUser(context.Context, adminstore.CreateWorkUserInput, identity.AuthenticatedActor, string, string) (adminstore.WorkUserView, error)
+	ReissueWorkUserInvitation(context.Context, string, string, adminstore.ReissueWorkUserInvitationInput, identity.AuthenticatedActor, string, string) (adminstore.WorkUserInvitationView, error)
 	ListWorkUsers(context.Context, string, identity.AuthenticatedActor, string, string) ([]adminstore.WorkUserDirectoryEntry, error)
+	GetWorkUserIdentity(context.Context, string, string, identity.AuthenticatedActor, string, string) (adminstore.WorkUserIdentityView, error)
+	RevokeWorkUserSessions(context.Context, string, string, uint64, identity.AuthenticatedActor, string, string) (adminstore.WorkUserSessionRevocationView, error)
+	UpdateWorkUserStatus(context.Context, string, string, uint64, adminstore.UpdateWorkUserStatusInput, identity.AuthenticatedActor, string, string) (adminstore.WorkUserStatusView, error)
 	ListWorkRoles(context.Context, string, identity.AuthenticatedActor, string, string) (adminstore.WorkRoleCatalog, error)
 	CreateWorkRole(context.Context, adminstore.CreateWorkRoleInput, identity.AuthenticatedActor, string, string) (adminstore.WorkRoleView, error)
 	UpdateWorkRole(context.Context, string, uint64, adminstore.UpdateWorkRoleInput, identity.AuthenticatedActor, string, string) (adminstore.WorkRoleView, error)
@@ -38,10 +51,94 @@ type AdminService interface {
 	CreateOrganizationalUnit(context.Context, string, adminstore.CreateOrganizationalUnitInput, identity.AuthenticatedActor, string, string) (adminstore.OrganizationalUnitView, error)
 	UpdateOrganizationalUnit(context.Context, string, string, uint64, adminstore.UpdateOrganizationalUnitInput, identity.AuthenticatedActor, string, string) (adminstore.OrganizationalUnitView, error)
 	ListSecurityAuditEvents(context.Context, adminstore.SecurityAuditQuery, identity.AuthenticatedActor, string, string) (adminstore.SecurityAuditPage, error)
+	GetOperationsSummary(context.Context, identity.AuthenticatedActor, string, string) (adminstore.OperationsSummaryView, error)
+	ListProviderRegistry(context.Context, identity.AuthenticatedActor, string, string) (adminstore.ProviderRegistryCatalog, error)
+	ListIdentityProviders(context.Context, identity.AuthenticatedActor, string, string) (adminstore.IdentityProviderCatalog, error)
 }
 
 func adminRoutes(auth AuthService, service AdminService) http.Handler {
 	router := chi.NewRouter()
+	router.Post("/reauthentication", func(writer http.ResponseWriter, request *http.Request) {
+		var input struct {
+			CurrentPassword string                           `json:"current_password"`
+			TOTPCode        string                           `json:"totp_code"`
+			Method          string                           `json:"method"`
+			Binding         identity.ReauthenticationBinding `json:"binding"`
+		}
+		if decodeJSON(writer, request, &input) != nil || !criticalReauthenticationBinding(input.Binding) {
+			writeProblem(writer, request, http.StatusBadRequest, "invalid-reauthentication", "Invalid reauthentication", "The requested action binding is invalid.")
+			return
+		}
+		target := coreauth.InstallationResource(resource.Kind(input.Binding.ResourceKind), input.Binding.ResourceID)
+		if _, ok := authorizeAdminRequest(writer, request, auth, service, input.Binding.PermissionKey, target); !ok {
+			return
+		}
+		reauth, ok := auth.(adminReauthentication)
+		if !ok {
+			writeProblem(writer, request, http.StatusNotImplemented, "reauthentication-unavailable", "Reauthentication unavailable", "Action-bound reauthentication is not configured.")
+			return
+		}
+		var ticket identity.ReauthenticationTicket
+		var err error
+		if input.Method == "totp" {
+			totp, supported := auth.(adminTOTPReauthentication)
+			if !supported {
+				writeProblem(writer, request, http.StatusNotImplemented, "reauthentication-unavailable", "Reauthentication unavailable", "TOTP reauthentication is not configured.")
+				return
+			}
+			ticket, err = totp.StartTOTPReauthentication(request.Context(), cookieValue(request, "werk_session"), input.TOTPCode, input.Binding, requestIDFromContext(request.Context()), correlationIDFromContext(request.Context()))
+		} else if input.Method == "" || input.Method == "password" {
+			ticket, err = reauth.StartReauthentication(request.Context(), cookieValue(request, "werk_session"), input.CurrentPassword, input.Binding, requestIDFromContext(request.Context()), correlationIDFromContext(request.Context()))
+		} else {
+			writeProblem(writer, request, http.StatusBadRequest, "invalid-reauthentication", "Invalid reauthentication", "The selected authentication method is invalid.")
+			return
+		}
+		if err != nil {
+			writeProblem(writer, request, http.StatusUnauthorized, "reauthentication-failed", "Reauthentication failed", "The authentication proof was rejected or temporarily throttled.")
+			return
+		}
+		writer.Header().Set("Cache-Control", "no-store")
+		writeJSON(writer, http.StatusCreated, ticket)
+	})
+	router.Get("/operations/summary", func(writer http.ResponseWriter, request *http.Request) {
+		actor, ok := authorizeAdminRequest(writer, request, auth, service, "core.platform.operations.read", coreauth.InstallationResource(resource.KindPlatformInstallation, resource.RootID))
+		if !ok {
+			return
+		}
+		summary, err := service.GetOperationsSummary(request.Context(), actor, requestIDFromContext(request.Context()), correlationIDFromContext(request.Context()))
+		if err != nil {
+			writeProblem(writer, request, http.StatusInternalServerError, "operations-summary-failed", "Operations summary failed", "The platform operations summary could not be loaded.")
+			return
+		}
+		writer.Header().Set("Cache-Control", "no-store")
+		writeJSON(writer, http.StatusOK, summary)
+	})
+	router.Get("/provider-registry", func(writer http.ResponseWriter, request *http.Request) {
+		actor, ok := authorizeAdminRequest(writer, request, auth, service, "core.platform.provider-registry.read", coreauth.InstallationResource(resource.KindPlatformInstallation, resource.RootID))
+		if !ok {
+			return
+		}
+		catalog, err := service.ListProviderRegistry(request.Context(), actor, requestIDFromContext(request.Context()), correlationIDFromContext(request.Context()))
+		if err != nil {
+			writeProblem(writer, request, http.StatusInternalServerError, "provider-registry-list-failed", "Provider Registry listing failed", "The Provider Registry catalog could not be loaded.")
+			return
+		}
+		writer.Header().Set("Cache-Control", "no-store")
+		writeJSON(writer, http.StatusOK, catalog)
+	})
+	router.Get("/identity/providers", func(writer http.ResponseWriter, request *http.Request) {
+		actor, ok := authorizeAdminRequest(writer, request, auth, service, "core.identity.provider.read", coreauth.InstallationResource(resource.KindPlatformInstallation, resource.RootID))
+		if !ok {
+			return
+		}
+		catalog, err := service.ListIdentityProviders(request.Context(), actor, requestIDFromContext(request.Context()), correlationIDFromContext(request.Context()))
+		if err != nil {
+			writeProblem(writer, request, http.StatusInternalServerError, "identity-provider-list-failed", "Identity provider listing failed", "The identity provider overview could not be loaded.")
+			return
+		}
+		writer.Header().Set("Cache-Control", "no-store")
+		writeJSON(writer, http.StatusOK, catalog)
+	})
 	router.Get("/security-audit", func(writer http.ResponseWriter, request *http.Request) {
 		query, err := securityAuditQueryFromRequest(request)
 		if err != nil {
@@ -87,8 +184,12 @@ func adminRoutes(auth AuthService, service AdminService) http.Handler {
 		writeJSON(writer, http.StatusOK, map[string]any{"items": views})
 	})
 	router.Post("/tenants", func(writer http.ResponseWriter, request *http.Request) {
-		actor, ok := authorizeAdminRequest(writer, request, auth, service, "core.tenancy.tenant.create", coreauth.InstallationResource(resource.KindPlatformInstallation, resource.RootID))
+		target := coreauth.InstallationResource(resource.KindPlatformInstallation, resource.RootID)
+		actor, ok := authorizeAdminRequest(writer, request, auth, service, "core.tenancy.tenant.create", target)
 		if !ok {
+			return
+		}
+		if !requireAdminReauthentication(writer, request, auth, "core.tenancy.tenant.create", target) {
 			return
 		}
 		var input adminstore.CreateTenantInput
@@ -110,8 +211,12 @@ func adminRoutes(auth AuthService, service AdminService) http.Handler {
 			writeProblem(writer, request, http.StatusBadRequest, "invalid-tenant", "Invalid tenant", "The tenant identifier is invalid.")
 			return
 		}
-		actor, ok := authorizeAdminRequest(writer, request, auth, service, "core.tenancy.tenant.update", coreauth.InstallationResource(resource.KindTenant, tenantID.String()))
+		target := coreauth.InstallationResource(resource.KindTenant, tenantID.String())
+		actor, ok := authorizeAdminRequest(writer, request, auth, service, "core.tenancy.tenant.update", target)
 		if !ok {
+			return
+		}
+		if !requireAdminReauthentication(writer, request, auth, "core.tenancy.tenant.update", target) {
 			return
 		}
 		expectedVersion, ok := requireExpectedVersion(writer, request)
@@ -163,6 +268,10 @@ func adminRoutes(auth AuthService, service AdminService) http.Handler {
 			return
 		}
 		view, err := service.CreateOrganizationalUnit(request.Context(), tenantID.String(), input, actor, requestIDFromContext(request.Context()), correlationIDFromContext(request.Context()))
+		if errors.Is(err, adminstore.ErrOrganizationalUnitDepthConflict) {
+			writeAdminUpdateProblem(writer, request, err, "organizational-unit")
+			return
+		}
 		if err != nil {
 			writeProblem(writer, request, http.StatusBadRequest, "organizational-unit-create-failed", "Organizational unit creation failed", "The organizational unit could not be created.")
 			return
@@ -203,6 +312,10 @@ func adminRoutes(auth AuthService, service AdminService) http.Handler {
 		writeJSON(writer, http.StatusOK, view)
 	})
 	router.Post("/work-users", func(writer http.ResponseWriter, request *http.Request) {
+		// This response may contain the only copy of an invitation token. Keep
+		// the protection local to the route as well as in the global security
+		// middleware so the contract remains safe when tested or embedded alone.
+		writer.Header().Set("Cache-Control", "no-store")
 		identityService, ok := auth.(adminIdentity)
 		if !ok || service == nil {
 			writeProblem(writer, request, http.StatusNotImplemented, "admin-unavailable", "Administration unavailable", "The administration service is not configured.")
@@ -210,7 +323,7 @@ func adminRoutes(auth AuthService, service AdminService) http.Handler {
 		}
 		actor, err := identityService.ResolveActor(request.Context(), cookieValue(request, "werk_session"), identity.AccessPlaneAdmin)
 		if err != nil {
-			writeProblem(writer, request, http.StatusUnauthorized, "invalid-admin-session", "Authentication required", "A valid multi-factor admin session is required.")
+			writeProblem(writer, request, http.StatusUnauthorized, "invalid-admin-session", "Authentication required", "A valid admin session is required.")
 			return
 		}
 		if err := identityService.Authorize(request.Context(), actor, "core.identity.work-account.create", coreauth.InstallationResource(resource.KindPlatformInstallation, resource.RootID)); err != nil {
@@ -245,6 +358,131 @@ func adminRoutes(auth AuthService, service AdminService) http.Handler {
 			return
 		}
 		writeJSON(writer, http.StatusOK, map[string]any{"items": entries})
+	})
+	router.Get("/tenants/{tenantID}/work-users/{accountID}/identity", func(writer http.ResponseWriter, request *http.Request) {
+		tenantID, err := tenancy.ParseTenantID(chi.URLParam(request, "tenantID"))
+		accountID := strings.ToLower(strings.TrimSpace(chi.URLParam(request, "accountID")))
+		if err != nil || !validUUID(accountID) {
+			writeProblem(writer, request, http.StatusBadRequest, "invalid-work-user", "Invalid work user", "The tenant or account identifier is invalid.")
+			return
+		}
+		actor, ok := authorizeAdminRequest(writer, request, auth, service, "core.identity.work-account.read", coreauth.InstallationResource(resource.KindTenant, tenantID.String()))
+		if !ok {
+			return
+		}
+		view, err := service.GetWorkUserIdentity(request.Context(), tenantID.String(), accountID, actor, requestIDFromContext(request.Context()), correlationIDFromContext(request.Context()))
+		if errors.Is(err, adminstore.ErrNotFound) {
+			writeProblem(writer, request, http.StatusNotFound, "work-user-not-found", "Work user not found", "The work account was not found in this tenant.")
+			return
+		}
+		if err != nil {
+			writeProblem(writer, request, http.StatusInternalServerError, "work-user-identity-failed", "Identity details failed", "Authentication and session details could not be loaded.")
+			return
+		}
+		writer.Header().Set("Cache-Control", "no-store")
+		writeJSON(writer, http.StatusOK, view)
+	})
+	router.Post("/tenants/{tenantID}/work-users/{accountID}/sessions/revoke", func(writer http.ResponseWriter, request *http.Request) {
+		tenantID, err := tenancy.ParseTenantID(chi.URLParam(request, "tenantID"))
+		accountID := strings.ToLower(strings.TrimSpace(chi.URLParam(request, "accountID")))
+		if err != nil || !validUUID(accountID) {
+			writeProblem(writer, request, http.StatusBadRequest, "invalid-work-user", "Invalid work user", "The tenant or account identifier is invalid.")
+			return
+		}
+		target := coreauth.InstallationResource(resource.KindWorkAccount, accountID)
+		actor, ok := authorizeAdminRequest(writer, request, auth, service, "core.identity.work-account.update", target)
+		if !ok {
+			return
+		}
+		if !requireAdminReauthentication(writer, request, auth, "core.identity.work-account.update", target) {
+			return
+		}
+		expectedVersion, ok := requireExpectedVersion(writer, request)
+		if !ok {
+			return
+		}
+		view, err := service.RevokeWorkUserSessions(request.Context(), tenantID.String(), accountID, expectedVersion, actor, requestIDFromContext(request.Context()), correlationIDFromContext(request.Context()))
+		if err != nil {
+			writeAdminUpdateProblem(writer, request, err, "work-user")
+			return
+		}
+		writeVersionETag(writer, view.Version)
+		writer.Header().Set("Cache-Control", "no-store")
+		writeJSON(writer, http.StatusOK, view)
+	})
+	router.Put("/tenants/{tenantID}/work-users/{accountID}", func(writer http.ResponseWriter, request *http.Request) {
+		tenantID, err := tenancy.ParseTenantID(chi.URLParam(request, "tenantID"))
+		if err != nil {
+			writeProblem(writer, request, http.StatusBadRequest, "invalid-tenant", "Invalid tenant", "The tenant identifier is invalid.")
+			return
+		}
+		accountID := strings.ToLower(strings.TrimSpace(chi.URLParam(request, "accountID")))
+		target := coreauth.InstallationResource(resource.KindWorkAccount, accountID)
+		actor, ok := authorizeAdminRequest(writer, request, auth, service, "core.identity.work-account.update", target)
+		if !ok {
+			return
+		}
+		if !requireAdminReauthentication(writer, request, auth, "core.identity.work-account.update", target) {
+			return
+		}
+		expectedVersion, ok := requireExpectedVersion(writer, request)
+		if !ok {
+			return
+		}
+		var input adminstore.UpdateWorkUserStatusInput
+		if decodeJSON(writer, request, &input) != nil {
+			writeProblem(writer, request, http.StatusBadRequest, "invalid-work-user", "Invalid work user", "The work account status data is invalid.")
+			return
+		}
+		view, err := service.UpdateWorkUserStatus(
+			request.Context(), tenantID.String(), accountID, expectedVersion, input, actor,
+			requestIDFromContext(request.Context()), correlationIDFromContext(request.Context()),
+		)
+		if err != nil {
+			writeAdminUpdateProblem(writer, request, err, "work-user")
+			return
+		}
+		writeVersionETag(writer, view.Version)
+		writer.Header().Set("Cache-Control", "no-store")
+		writeJSON(writer, http.StatusOK, view)
+	})
+	router.Post("/tenants/{tenantID}/work-users/{accountID}/invitation", func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Cache-Control", "no-store")
+		tenantID, err := tenancy.ParseTenantID(chi.URLParam(request, "tenantID"))
+		if err != nil {
+			writeProblem(writer, request, http.StatusBadRequest, "invalid-tenant", "Invalid tenant", "The tenant identifier is invalid.")
+			return
+		}
+		accountID := strings.ToLower(strings.TrimSpace(chi.URLParam(request, "accountID")))
+		target := coreauth.InstallationResource(resource.KindWorkAccount, accountID)
+		actor, ok := authorizeAdminRequest(writer, request, auth, service, "core.identity.work-account.update", target)
+		if !ok {
+			return
+		}
+		if !requireAdminReauthentication(writer, request, auth, "core.identity.work-account.update", target) {
+			return
+		}
+		var input adminstore.ReissueWorkUserInvitationInput
+		if decodeJSON(writer, request, &input) != nil {
+			writeProblem(writer, request, http.StatusBadRequest, "invalid-work-user-invitation", "Invalid work user invitation", "The invitation draft data is invalid.")
+			return
+		}
+		view, err := service.ReissueWorkUserInvitation(
+			request.Context(), tenantID.String(), accountID, input, actor,
+			requestIDFromContext(request.Context()), correlationIDFromContext(request.Context()),
+		)
+		switch {
+		case errors.Is(err, adminstore.ErrInvalidWorkUserInvitationReissue):
+			writeProblem(writer, request, http.StatusBadRequest, "work-user-invitation-reissue-failed", "Invitation reissue failed", "The initial work account invitation could not be reissued.")
+			return
+		case errors.Is(err, adminstore.ErrImmutable):
+			writeProblem(writer, request, http.StatusConflict, "work-user-invitation-not-replaceable", "Invitation cannot be reissued", "The initial work account invitation cannot be replaced in its current state.")
+			return
+		case err != nil:
+			writeProblem(writer, request, http.StatusInternalServerError, "work-user-invitation-reissue-processing-failed", "Invitation reissue failed", "The initial work account invitation could not be processed.")
+			return
+		}
+		writeJSON(writer, http.StatusCreated, view)
 	})
 	router.Get("/work-roles", func(writer http.ResponseWriter, request *http.Request) {
 		tenantID, err := tenancy.ParseTenantID(request.URL.Query().Get("tenant_id"))
@@ -424,6 +662,12 @@ func writeAdminUpdateProblem(writer http.ResponseWriter, request *http.Request, 
 		writeProblem(writer, request, http.StatusNotFound, resource+"-not-found", "Resource not found", "The requested administrative resource does not exist in this tenant.")
 	case errors.Is(err, adminstore.ErrVersionConflict):
 		writeProblem(writer, request, http.StatusPreconditionFailed, "version-conflict", "Version conflict", "The resource changed after it was loaded. Reload it and retry the update.")
+	case errors.Is(err, adminstore.ErrOrganizationalUnitReferenced):
+		writeProblem(writer, request, http.StatusConflict, "organizational-unit-referenced", "Organizational unit is referenced", "Active or scheduled organizational, access, app, or role links must be removed, revoked where supported, or allowed to expire before this organizational unit can be archived. Disabling a containing app, group, or role does not remove its durable edge.")
+	case errors.Is(err, adminstore.ErrOrganizationalUnitInheritedAccessConflict):
+		writeProblem(writer, request, http.StatusConflict, "organizational-unit-inherited-access-conflict", "Inherited access would change", "Reparenting this organizational unit would change the reach of an active or scheduled descendant-inclusive app entitlement or access-group membership.")
+	case errors.Is(err, adminstore.ErrOrganizationalUnitDepthConflict):
+		writeProblem(writer, request, http.StatusConflict, "organizational-unit-depth-limit-exceeded", "Organizational hierarchy is too deep", "The requested hierarchy change would exceed the supported organizational-unit depth.")
 	case errors.Is(err, adminstore.ErrImmutable):
 		writeProblem(writer, request, http.StatusConflict, "immutable-resource", "Resource is immutable", "The protected system resource cannot be changed through this contract.")
 	default:
@@ -439,7 +683,7 @@ func authorizeAdminRequest(writer http.ResponseWriter, request *http.Request, au
 	}
 	actor, err := identityService.ResolveActor(request.Context(), cookieValue(request, "werk_session"), identity.AccessPlaneAdmin)
 	if err != nil {
-		writeProblem(writer, request, http.StatusUnauthorized, "invalid-admin-session", "Authentication required", "A valid multi-factor admin session is required.")
+		writeProblem(writer, request, http.StatusUnauthorized, "invalid-admin-session", "Authentication required", "A valid admin session is required.")
 		return identity.AuthenticatedActor{}, false
 	}
 	if err := identityService.Authorize(request.Context(), actor, permission, resource); err != nil {
@@ -447,4 +691,39 @@ func authorizeAdminRequest(writer http.ResponseWriter, request *http.Request, au
 		return identity.AuthenticatedActor{}, false
 	}
 	return actor, true
+}
+
+func criticalReauthenticationBinding(binding identity.ReauthenticationBinding) bool {
+	switch binding.PermissionKey {
+	case "core.tenancy.tenant.create":
+		return binding.ResourceKind == string(resource.KindPlatformInstallation) && binding.ResourceID == resource.RootID
+	case "core.tenancy.tenant.update":
+		return binding.ResourceKind == string(resource.KindTenant) && binding.ResourceID != ""
+	case "core.identity.work-account.update":
+		return binding.ResourceKind == string(resource.KindWorkAccount) && binding.ResourceID != ""
+	default:
+		return false
+	}
+}
+
+func requireAdminReauthentication(writer http.ResponseWriter, request *http.Request, auth AuthService, permission string, target coreauth.Resource) bool {
+	binding := identity.ReauthenticationBinding{PermissionKey: permission, ResourceKind: string(target.Reference.Kind), ResourceID: target.Reference.ID}
+	reauth, ok := auth.(adminReauthentication)
+	if !ok {
+		writeProblem(writer, request, http.StatusNotImplemented, "reauthentication-unavailable", "Reauthentication unavailable", "Action-bound reauthentication is not configured.")
+		return false
+	}
+	ticket := strings.TrimSpace(request.Header.Get("X-WERK-Reauth-Token"))
+	if ticket == "" {
+		writer.Header().Set("WERK-Reauth-Permission", binding.PermissionKey)
+		writer.Header().Set("WERK-Reauth-Resource-Kind", binding.ResourceKind)
+		writer.Header().Set("WERK-Reauth-Resource-ID", binding.ResourceID)
+		writeProblem(writer, request, http.StatusPreconditionRequired, "reauthentication-required", "Reauthentication required", "Confirm an available administrator authentication method for this critical action.")
+		return false
+	}
+	if err := reauth.ConsumeReauthentication(request.Context(), cookieValue(request, "werk_session"), ticket, binding, requestIDFromContext(request.Context()), correlationIDFromContext(request.Context())); err != nil {
+		writeProblem(writer, request, http.StatusPreconditionRequired, "reauthentication-required", "Reauthentication required", "The action-bound confirmation is missing, expired, or already used.")
+		return false
+	}
+	return true
 }

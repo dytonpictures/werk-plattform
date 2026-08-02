@@ -1,13 +1,2 @@
 .env
-.env.*
-!.env.example
-.dev/
-.tmp/
-backups/
-coverage.out
 dist/
-bin/
-*.key
-*.pem
-*.p12
-*.age

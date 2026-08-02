@@ -57,13 +57,13 @@ Die Begriffe beschreiben die logische Installation. Mehrere Prozesse auf einem
 Host erzeugen kein `dual-cloud`-Profil. Ebenso macht eine zweite VM ohne
 Replikation, Witness und Fencing noch kein aktiviertes HA-Profil.
 
-OCI-Container bleiben das portable Anwendungsartefakt. Docker Compose bleibt das
-Entwicklungs- und erste Single-Profil. Ein unprivilegierter Proxmox-LXC darf als
-wegwerfbarer Lauffähigkeitsnachweis dienen, ist aber keine Abnahme der späteren
-Cloud-/Hybrid-Isolation. Für produktive getrennte Fehlerdomänen werden gehärtete
-VMs beziehungsweise gleichwertige hardwarevirtualisierte Grenzen bevorzugt.
-Kubernetes, k3s oder ein anderer Orchestrator werden dadurch nicht vorab
-verpflichtend.
+Native Binärdateien und Linux-Pakete sind die portablen Anwendungsartefakte.
+Der Entwicklungs- und erste Single-Host-Weg verwendet direkte Prozesse. Ein
+unprivilegierter Proxmox-LXC darf als wegwerfbarer Lauffähigkeitsnachweis dienen,
+ist aber keine Abnahme der späteren Cloud-/Hybrid-Isolation. Für produktive
+getrennte Fehlerdomänen werden gehärtete VMs beziehungsweise gleichwertige
+hardwarevirtualisierte Grenzen bevorzugt. Ein Orchestrator wird dadurch nicht
+vorab verpflichtend.
 
 ### Authority-Koordination
 
@@ -158,7 +158,7 @@ Fencing werden vor der ersten HA-Aktivierung separat implementiert und getestet.
 ## Bewusste Nicht-Ziele
 
 - kein Active/Active- oder Multi-Primary-Betrieb,
-- kein Kubernetes-Zwang,
+- kein Orchestrator-Zwang,
 - kein eigenes Betriebssystem in der aktuellen Ausbaustufe,
 - keine Witness-Abhängigkeit für jede Business-Anfrage,
 - keine produktive Aktivierung von `dual-cloud`, `hybrid` oder
@@ -173,8 +173,8 @@ zugeordnete Snapshots fail-closed ablehnen. Das ist weiterhin nur ein
 Sicherheitsvertrag und keine HA-Implementierung.
 
 Das Single-Profil und der LXC-Pilot bleiben klein. Cloud-/Hybridbetrieb kann
-später VMs, unveränderliche Host-Images und einen Orchestrator ergänzen, ohne
-OCI-Artefakte oder fachliche Core-Verträge neu zu entwerfen. Konkrete
+später VMs, unveränderliche Host-Abbilder und einen Orchestrator ergänzen, ohne
+native Artefakte oder fachliche Core-Verträge neu zu entwerfen. Konkrete
 Hypervisor-, Cloud-, Betriebssystem-, Datenbankreplikations- und
 Orchestratorentscheidungen benötigen eigene Abnahmetests; Änderungen
 vorbehalten.

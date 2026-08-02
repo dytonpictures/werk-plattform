@@ -1,0 +1,6 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Sicherheitslücke vertraulich melden
+    url: https://github.com/dytonpictures/werk/security/advisories/new
+    about: Keine Sicherheitsdetails in öffentlichen Issues veröffentlichen.
+

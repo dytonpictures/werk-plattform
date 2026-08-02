@@ -9,6 +9,7 @@
     />
     <title>WERK · Anmeldung</title>
     <link rel="stylesheet" href="/styles.css" />
+    <script src="/webauthn.js" defer></script>
     <script src="/app.js" defer></script>
   </head>
   <body>
@@ -41,7 +42,7 @@
 
         <div class="login-heading">
           <h1>Willkommen bei WERK</h1>
-          <p>Melden Sie sich an, um auf Ihre WERK-Instanz zuzugreifen.</p>
+          <p>Melden Sie sich mit Ihrem Arbeits- oder Administrationskonto an.</p>
         </div>
 
         <form class="login-form" data-login-form>
@@ -76,8 +77,7 @@
               <path d="M12 10v6M12 7.25v.25" />
             </svg>
             <p>
-              Ihre Zugangsdaten werden ausschließlich an die lokale WERK-Instanz
-              übertragen.
+              Ihre Zugangsdaten werden sicher an diese WERK-Installation übertragen.
             </p>
           </div>
 
@@ -86,6 +86,11 @@
           <button class="button button-primary login-submit" type="submit">
             Anmelden
           </button>
+
+          <div class="login-alternative" aria-hidden="true"><span>oder</span></div>
+          <button class="button button-secondary login-submit" data-passkey-login type="button">
+            Mit Passkey anmelden
+          </button>
         </form>
 
         <button class="button button-secondary logout-button" data-logout type="button" hidden>
@@ -93,8 +98,8 @@
         </button>
 
         <p class="routing-note">
-          Der passende Bereich wird nach der sicheren Anmeldung automatisch aus
-          dem Konto bestimmt.
+          WERK öffnet automatisch den zu Ihrer Kontoart passenden Bereich.
+          Dienstkonten sind ausschließlich für technische Schnittstellen bestimmt.
         </p>
       </main>
 

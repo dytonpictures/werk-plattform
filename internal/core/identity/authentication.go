@@ -2,6 +2,8 @@ package identity
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"errors"
 	"strings"
 	"time"
@@ -42,6 +44,18 @@ type VerifiedIdentity struct {
 	Method          AuthenticationMethod
 	Assurance       AuthenticationAssurance
 	AuthenticatedAt time.Time
+}
+
+// OIDCProviderSubject creates the stable, non-reversible account-binding key
+// for one exact issuer and subject pair. The separator prevents concatenation
+// ambiguity; changing the configured issuer cannot inherit old bindings.
+func OIDCProviderSubject(issuer, subject string) (string, error) {
+	if strings.TrimSpace(issuer) != issuer || issuer == "" || len(issuer) > 2048 ||
+		strings.TrimSpace(subject) != subject || subject == "" || len(subject) > 512 || strings.ContainsRune(issuer, '\x00') {
+		return "", ErrInvalidCredentials
+	}
+	digest := sha256.Sum256([]byte(issuer + "\x00" + subject))
+	return "oidc-v1:" + base64.RawURLEncoding.EncodeToString(digest[:]), nil
 }
 
 func (proof VerifiedIdentity) Validate() error {

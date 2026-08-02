@@ -175,30 +175,36 @@ func (entitlement Entitlement) Validate() error {
 }
 
 // ActorCoordinates are resolved from active server-side memberships. Ancestor
-// units contain only parents of the direct units; no client may add coordinates.
+// units contain only parents of the direct units. The fields deliberately stay
+// private so callers outside this package can only obtain coordinates from the
+// trusted resolver and cannot construct an allow-capable value themselves. The
+// result is bound to one actor and one evaluation instant; the public app-gate
+// decision resolves it again inside every evaluation instead of accepting a
+// transferable coordinate value.
 type ActorCoordinates struct {
-	TenantID                    tenancy.TenantID
-	AccountID                   identity.AccountID
-	DirectOrganizationalUnitIDs []tenancy.UnitID
-	AncestorUnitIDs             []tenancy.UnitID
-	AccessGroupIDs              []GroupID
+	tenantID                    tenancy.TenantID
+	accountID                   identity.AccountID
+	resolvedAt                  time.Time
+	directOrganizationalUnitIDs []tenancy.UnitID
+	ancestorUnitIDs             []tenancy.UnitID
+	accessGroupIDs              []GroupID
 }
 
 func (coordinates ActorCoordinates) Validate() error {
-	if coordinates.TenantID.IsZero() || coordinates.AccountID == (identity.AccountID{}) {
+	if coordinates.tenantID.IsZero() || coordinates.accountID == (identity.AccountID{}) || coordinates.resolvedAt.IsZero() {
 		return ErrInvalid
 	}
-	for _, id := range coordinates.DirectOrganizationalUnitIDs {
+	for _, id := range coordinates.directOrganizationalUnitIDs {
 		if id.IsZero() {
 			return ErrInvalid
 		}
 	}
-	for _, id := range coordinates.AncestorUnitIDs {
+	for _, id := range coordinates.ancestorUnitIDs {
 		if id.IsZero() {
 			return ErrInvalid
 		}
 	}
-	for _, id := range coordinates.AccessGroupIDs {
+	for _, id := range coordinates.accessGroupIDs {
 		if id == (GroupID{}) {
 			return ErrInvalid
 		}
@@ -231,23 +237,77 @@ func (decision Decision) Allowed() bool {
 	return decision.Effect == DecisionAllow
 }
 
+// EvaluationRequest contains one trusted server-derived view of the actor,
+// organization graph, access groups, installation and entitlements. The
+// evaluator deliberately resolves coordinates inside the same call so callers
+// cannot substitute a separately resolved value. A future runtime adapter must
+// still build a fresh request per authorization check from PostgreSQL and a
+// server-controlled clock; this pure value cannot prove its own freshness.
+type EvaluationRequest struct {
+	Actor            identity.AuthenticatedActor
+	Organization     OrganizationSnapshot
+	AccessGroups     []AccessGroup
+	GroupMemberships []GroupMembership
+	Installation     Installation
+	Entitlements     []Entitlement
+	EvaluatedAt      time.Time
+}
+
 // Evaluate decides only whether an actor may enter an app. A positive result
 // never grants an app role, permission, or access to a domain resource.
-func Evaluate(installation Installation, coordinates ActorCoordinates, entitlements []Entitlement, now time.Time) Decision {
-	if installation.Validate() != nil || coordinates.Validate() != nil || now.IsZero() ||
-		installation.TenantID != coordinates.TenantID {
+func Evaluate(request EvaluationRequest) Decision {
+	coordinates, err := ResolveActorCoordinates(
+		request.Actor,
+		request.Organization,
+		request.AccessGroups,
+		request.GroupMemberships,
+		request.EvaluatedAt,
+	)
+	if err != nil {
+		return Decision{Effect: DecisionDeny, Reason: ReasonInvalidContract}
+	}
+	return evaluateResolved(
+		request.Actor,
+		request.Installation,
+		coordinates,
+		request.Entitlements,
+		request.EvaluatedAt,
+	)
+}
+
+func evaluateResolved(
+	actor identity.AuthenticatedActor,
+	installation Installation,
+	coordinates ActorCoordinates,
+	entitlements []Entitlement,
+	evaluatedAt time.Time,
+) Decision {
+	if identity.AuthorizeAccessPlane(actor, identity.AccessPlaneWork) != nil ||
+		installation.Validate() != nil || coordinates.Validate() != nil || evaluatedAt.IsZero() ||
+		actor.TenantID == nil || *actor.TenantID != coordinates.tenantID ||
+		actor.AccountID != coordinates.accountID || !evaluatedAt.Equal(coordinates.resolvedAt) ||
+		installation.TenantID != coordinates.tenantID {
 		return Decision{Effect: DecisionDeny, Reason: ReasonInvalidContract}
 	}
 	if installation.Status != InstallationStatusActive {
 		return Decision{Effect: DecisionDeny, Reason: ReasonAppUnavailable}
 	}
+
+	entitlementIDs := make(map[EntitlementID]struct{}, len(entitlements))
 	for _, entitlement := range entitlements {
-		if entitlement.Validate() != nil || entitlement.TenantID != coordinates.TenantID ||
+		if entitlement.Validate() != nil || entitlement.TenantID != coordinates.tenantID ||
 			entitlement.AppModule != installation.AppModule {
 			return Decision{Effect: DecisionDeny, Reason: ReasonInvalidContract}
 		}
-		if entitlement.Status != EntitlementStatusActive || now.Before(entitlement.ValidFrom) ||
-			(entitlement.ValidUntil != nil && !now.Before(*entitlement.ValidUntil)) {
+		if _, duplicate := entitlementIDs[entitlement.ID]; duplicate {
+			return Decision{Effect: DecisionDeny, Reason: ReasonInvalidContract}
+		}
+		entitlementIDs[entitlement.ID] = struct{}{}
+	}
+
+	for _, entitlement := range entitlements {
+		if entitlement.Status != EntitlementStatusActive || evaluatedAt.Before(entitlement.ValidFrom) ||
+			(entitlement.ValidUntil != nil && !evaluatedAt.Before(*entitlement.ValidUntil)) {
 			continue
 		}
 		if subjectMatches(entitlement.Subject, coordinates) {
@@ -257,8 +317,8 @@ func Evaluate(installation Installation, coordinates ActorCoordinates, entitleme
 	return Decision{Effect: DecisionDeny, Reason: ReasonNoEntitlement}
 }
 
-func Authorize(installation Installation, coordinates ActorCoordinates, entitlements []Entitlement, now time.Time) error {
-	if !Evaluate(installation, coordinates, entitlements, now).Allowed() {
+func Authorize(request EvaluationRequest) error {
+	if !Evaluate(request).Allowed() {
 		return ErrDenied
 	}
 	return nil
@@ -266,18 +326,18 @@ func Authorize(installation Installation, coordinates ActorCoordinates, entitlem
 
 func subjectMatches(subject SubjectRef, coordinates ActorCoordinates) bool {
 	if subject.AccountID != nil {
-		return *subject.AccountID == coordinates.AccountID
+		return *subject.AccountID == coordinates.accountID
 	}
 	if subject.AccessGroupID != nil {
-		return containsGroup(coordinates.AccessGroupIDs, *subject.AccessGroupID)
+		return containsGroup(coordinates.accessGroupIDs, *subject.AccessGroupID)
 	}
 	if subject.OrganizationalUnitID == nil {
 		return false
 	}
-	if containsUnit(coordinates.DirectOrganizationalUnitIDs, *subject.OrganizationalUnitID) {
+	if containsUnit(coordinates.directOrganizationalUnitIDs, *subject.OrganizationalUnitID) {
 		return true
 	}
-	return subject.IncludeDescendants && containsUnit(coordinates.AncestorUnitIDs, *subject.OrganizationalUnitID)
+	return subject.IncludeDescendants && containsUnit(coordinates.ancestorUnitIDs, *subject.OrganizationalUnitID)
 }
 
 func containsUnit(values []tenancy.UnitID, target tenancy.UnitID) bool {

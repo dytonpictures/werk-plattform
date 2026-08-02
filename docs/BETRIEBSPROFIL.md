@@ -1,156 +1,204 @@
-# WERK – Betriebsprofil 1: Single Host
+# WERK – Betriebsprofil 1: nativer Single Host
 
-**Status:** Startprofil für interne Produktiv- und Testinstanzen
+**Status:** Startprofil für interne Produktiv- und Testinstanzen  
+**Stand:** 2026-07-29
 
 ## Ziel
 
-Eine WERK-Installation wird zunächst auf einem einzelnen, vom Unternehmen
-kontrollierten Linux-Server über Docker Compose betrieben. Dashboard, API,
-Worker und Infrastruktur laufen in getrennten Containern.
+WERK läuft auf einem vom Unternehmen kontrollierten Debian-/Ubuntu-Host auf
+`amd64` als kleine Gruppe nativer Prozesse. Die API liefert die
+Business-API und die eingebettete Weboberfläche auf demselben Origin. Worker und
+Migration bleiben eigene Prozesse, PostgreSQL bleibt die fachliche Wahrheit.
 
-## Dienstgrenzen
+## Einfacher Start
 
-- Nur `edge` veröffentlicht im vollständigen Stack einen Port nach außen;
-  Datenbank, Valkey und Kafka bleiben im Compose-Netz.
-- `dashboard` kommuniziert ausschließlich über die öffentliche Business-API.
-- `api` und `worker` verwenden PostgreSQL für fachliche Daten und Outbox.
-- `kafka` läuft als einzelner persistenter KRaft-Broker/Controller;
-  `kafka-init` legt die getrennten Domain-, Audit- und Log-Topics idempotent an.
-- `migrate` endet nach erfolgreicher Migration und wird nicht dauerhaft betrieben.
-- `database-roles` gleicht vor Migrationen die lokalen PostgreSQL-Rollen ab und
-  endet danach. API und Worker kennen das Bootstrap-Credential nicht.
-- Valkey besitzt keine alleinigen fachlichen Daten.
-- Kafka verteilt Ereignisse, minimierte Security-Audits und Betriebslogs, ist
-  aber weder fachliche Wahrheit noch revisionssicheres Langzeitarchiv.
+Im Quellstand ist `.env` die zentrale Konfigurations- und Secret-Datei:
+
+```sh
+cp .env.example .env
+chmod 600 .env
+sh scripts/start.sh
+```
+
+Die Startskripte validieren `.env`, führen Migrationen aus und starten die API.
+Das Dashboard braucht keinen eigenen Prozess. Kafka ist im einfachen Profil
+deaktiviert; bei aktivierter Ereigniszustellung startet der Worker separat mit
+`go run ./cmd/worker`.
+
+## Prozess- und Rechtegrenzen
+
+- `werk-api` bedient Web und HTTP-API, prüft Tenant und Berechtigungen
+  serverseitig und verwendet getrennte Work-, Identity- und Admin-Rollen.
+- `werk-worker` verarbeitet Outbox und Auditexport mit einer eigenen
+  Non-Owner-Datenbankrolle.
+- `werk-migrate` führt einmalige, versionierte Migrationen über die
+  Migrator-Rolle aus.
+- PostgreSQL ist das einzige fachliche System of Record.
+- Valkey und Kafka sind optionale, austauschbare Infrastruktur und nie die
+  alleinige Wahrheit.
+
+Die Konfiguration liegt zentral, die Zugangsdaten bleiben trotzdem nach Zweck
+getrennt: `WORK_DATABASE_URL`, `IDENTITY_DATABASE_URL`, `ADMIN_DATABASE_URL`,
+`WORKER_DATABASE_URL` und `MIGRATOR_DATABASE_URL` verwenden verschiedene
+PostgreSQL-Rollen. Ein Bootstrap-Superuser ist kein Laufzeitcredential.
 
 ## Mindestbetrieb
 
-- Der native API-Server verlangt in Produktion `tls` oder `mtls`. Zertifikat,
-  privater Schlüssel und gegebenenfalls Client-CA werden als sichere Dateien
-  bereitgestellt und bei Rotation fail-closed neu geladen. Ein vorgeschalteter
-  Proxy ersetzt diesen Softwarevertrag nicht; weitergereichte HTTPS-Information
-  wird nur aus ausdrücklich vertrauten Proxy-Netzen akzeptiert.
-- PostgreSQL-Verbindungen verwenden in Produktion `sslmode=verify-full`; TLS,
-  externe Backups, sichere Secrets und ein nicht triviales
-  `POSTGRES_PASSWORD` sind vor nicht-lokaler Nutzung Pflicht. Dasselbe gilt für
-  die getrennten Migrator-, Work-, Admin-, Service- und Worker-Passwörter.
-- Vor jedem risikoreichen Update wird ein getestetes Datenbank- und
-  Dokumentenbackup erzeugt.
-- Der Betreiber prüft `/health/live` und `/health/ready`; Logs werden zentral
-  gesammelt, ohne Geheimnisse oder unnötige Geschäftsdaten aufzunehmen.
-- Testinstanzen erhalten einen eigenen Tenant und eigene Daten. Produktivdaten
-  werden nur anonymisiert oder über einen ausdrücklich freigegebenen Export
-  übertragen.
-- Runtime-Dienste verbinden sich ausschließlich als Non-Owner-Rollen ohne
-  `SUPERUSER` oder `BYPASSRLS`. Der Bootstrap-Superuser ist kein
-  Anwendungscredential.
-- Bei aktiviertem Kafka verlangt die Produktionskonfiguration TLS sowie SASL
-  oder ein Client-Zertifikat. Das mitgelieferte Plaintext-Profil ist auf das
-  interne lokale Compose-Netz begrenzt und kein fertiges Produktions-
-  Sicherheitsprofil.
+- Entwicklung ohne TLS bindet ausschließlich an Loopback.
+- Produktion verlangt direktes TLS oder mTLS und PostgreSQL mit
+  `sslmode=verify-full`.
+- `.env` wird nicht versioniert. Unter Linux ist sie nur für den Betreiber und
+  die ausdrücklich berechtigte WERK-Gruppe lesbar.
+- Vor Updates werden Datenbackup, Wiederherstellbarkeit, Migrationspfad und
+  Zielversion geprüft.
+- `/health/live` und `/health/ready` werden überwacht; strukturierte Logs dürfen
+  keine Secrets oder unnötigen Geschäftsdaten enthalten.
+- Testinstanzen verwenden eigene Tenants und eigene Daten.
 
-Der native Transportvertrag und seine bewusste Trennung von Policy, Lease und
-Fencing sind in
-[`ADR-023`](adr/ADR-023-native-server-tls-und-transportidentitaet.md)
-festgelegt; Änderungen vorbehalten.
+## Kafka und Worker
 
-## Kafka und Streamingbetrieb
+Kafka ist optional. Ist Kafka deaktiviert, speichert PostgreSQL autoritative
+Änderungen, Audits und Outbox-Einträge weiterhin atomar. Bei späterer
+Aktivierung arbeitet der Worker den Rückstau nach. Ein Brokerausfall darf die
+fachliche Wahrheit nicht verlieren.
 
-Der gepinnte Broker verwendet ein eigenes persistentes Volume. Domain-Events
-werden sieben Tage, minimierte Auditexporte dreißig Tage und Laufzeitlogs sieben
-Tage im lokalen Startprofil gehalten. Diese Werte begrenzen ausschließlich den
-Transportpuffer und dürfen nach Datenklassifikation und Betreiberpflichten
-angepasst werden. `cleanup.policy=delete` verhindert eine versehentliche
-Kompaktion des Auditverlaufs.
+Vor dem Start mit aktiviertem Kafka müssen die drei getrennten Topics
+`platform.domain-events.v1`, `platform.security-audit.v1` und
+`platform.runtime-logs.v1` mit passenden ACLs, Retention und Replikation
+betreiberseitig angelegt sein. WERK legt Topics nicht automatisch an.
+`werkctl doctor` sowie der Worker prüfen Broker und Topic-Metadaten fail-fast.
+Die API-Metrik `werk_kafka_runtime_logs_dropped_total` zählt lokal verworfene
+oder fehlgeschlagene Logexporte ohne hochkardinale Labels. Domain-Event- und
+Audit-Rückstände werden unabhängig aus PostgreSQL in der administrativen
+Betriebsübersicht angezeigt.
 
-Ein Broker-Ausfall macht die Business-API nicht automatisch fachlich
-unbrauchbar: PostgreSQL nimmt autoritative Änderungen, Audits und Outbox-
-Einträge weiter atomar an. Der Worker baut Rückstau auf und verarbeitet ihn nach
-Wiederkehr. Betreiber überwachen Broker-Health, nicht abgeschlossene
-`outbox_events`, `security_audit_export_queue`, Retry-/Dead-Zustände sowie die
-Anzahl verworfener, nicht revisionsrelevanter Laufzeitlogs.
+Der Worker erneuert zusätzlich alle zehn Sekunden eine minimierte, expierende
+Kafka-Beobachtung in PostgreSQL. Die Adminübersicht zeigt Kafka nur bei einer
+frischen erfolgreichen Broker- und Topic-Prüfung als `ready`; Prüffehler werden
+`degraded`, ein fehlender oder abgelaufener Worker wird `unknown`, und eine
+deaktivierte Konfiguration bleibt `disabled`. Brokeradressen, Topicnamen,
+Fehlertexte und Credentials werden nicht in der Beobachtung gespeichert. Der
+vorgeschlagene generische Ausbau zu anklickbaren Statusintervallen steht in
+[`ADR-043`](adr/ADR-043-generische-komponentenbeobachtung-und-statushistorie.md).
 
-Der einzelne Broker ist keine HA-Lösung. Mehrere Broker/Controller auf
-getrennten Hosts, Replikationsfaktoren größer eins, gesicherte Listener,
-ACL-Verwaltung, Kapazitäts- und Wiederherstellungstests werden in einem späteren
-Clusterprofil festgelegt. Der verbindliche Vertrag steht in
-[`ADR-020`](adr/ADR-020-kafka-event-audit-und-log-streaming.md); Änderungen
-vorbehalten.
+Für Produktion verlangt die Kafka-Konfiguration TLS sowie SASL oder ein
+Client-Zertifikat. Ein einzelner Broker ist keine HA-Lösung. Der Vertrag steht
+in [`ADR-020`](adr/ADR-020-kafka-event-audit-und-log-streaming.md).
+
+## Optionaler Cache
+
+`WERK_CACHE_URL` aktiviert einen austauschbaren Cacheadapter; der mitgelieferte
+Adapter akzeptiert `valkey://`/`valkeys://` und `redis://`/`rediss://`. In
+Produktion sind ausschließlich die TLS-Varianten mit Zertifikatsprüfung
+zulässig. Ohne Konfiguration oder bei Adapterausfall bleibt die API korrekt und
+verwendet PostgreSQL. Der erste Anwendungsfall puffert nur gehashte Hinweise auf
+eindeutig ungültige Sessions für 15 Sekunden; vollständige Sessions, Rollen,
+Widerrufe und Audits werden nicht in den Cache verlagert. Siehe
+[`ADR-039`](adr/ADR-039-austauschbarer-cache-und-sessionhinweise.md).
+Ein wegwerfbarer Adapter kann mit `WERK_TEST_CACHE_URL=... go test
+./internal/platform/valkeycache` gegen `set`/`get`/`delete` geprüft werden. Die
+Test-URL gehört nicht in die versionierte Konfiguration.
+
+## Lokales Betriebswerkzeug
+
+`werkctl doctor` inventarisiert die lokale Konfiguration, Listener-/TLS-Grenze,
+fünf getrennte Datenbankrollen und – sofern aktiviert – Kafka. Die Ausgabe
+verwendet stabile Check-IDs und `PASS`, `WARN` oder `FAIL`; `--json` stellt
+denselben Vertrag als Schema `v1` bereit. `--config-only` öffnet keine
+Netzwerkverbindung. Mit einer ausdrücklich gesetzten `--url` kann `doctor`
+zusätzlich die öffentlichen API-Signale prüfen.
+
+`werkctl status --url URL` liest ausschließlich `/meta`, `/health/live` und
+`/health/ready`. Der Befehl behauptet weder Worker-, Kafka-, Migrations-,
+Backup-, Host- noch HA-Zustand und erzeugt keine Admin-Sitzung. HTTP ist nur
+für Loopback-Ziele zulässig; HTTPS behält die normale Zertifikatsprüfung und
+folgt keinen Redirects.
+
+`werkctl migrate` bleibt ein ausdrücklich verändernder, aufwärtsgerichteter
+Command mit eigener Migrator-Rolle. Start, Stop, Neustart, Update und
+Hybrid-Cloud-Pairing sind noch keine ausführbaren Befehle. Ihre typisierte
+Runnergrenze ist in
+[`ADR-031`](adr/ADR-031-werkctl-betriebsbefehle-und-runnergrenze.md)
+vorgeschlagen; weder `doctor` noch `status` führen Reparaturen automatisch aus.
+
+## Administrative Betriebsübersicht
+
+Das Admin-Portal liest über `/admin/v1/operations/summary` eine
+installationsweite Betriebsübersicht. Der Abruf verlangt eine gültige
+interaktive Admin-Sitzung mit Admin-Audience, ohne Tenant und mit bekannter
+Single- oder Multi-Factor-Assurance sowie die Berechtigung
+`core.platform.operations.read`; `unknown` wird fail-closed abgewiesen. Der
+Abruf wird selbst als Security-Ereignis auditiert. Die Antwort ist nicht
+cachebar. Der allgemeine Assurance-Vertrag steht in
+[`ADR-032`](adr/ADR-032-optionale-admin-mfa-und-aktionsgebundene-reauthentifizierung.md).
+
+Die Übersicht enthält ausschließlich bereinigte Zustände:
+
+- API- und PostgreSQL-Erreichbarkeit aus dem erfolgreichen autorisierten Abruf,
+- den aktiven Worker-Heartbeat mit Build- und begrenzten Zeitkoordinaten,
+- aggregierte Zustände und Anzahlen der Domain-Outbox und des
+  Security-Audit-Exports einschließlich des Alters des ältesten offenen
+  Eintrags,
+- Anzahl und neuesten Stand angewendeter Migrationen,
+- nicht geheime Installationskoordinaten wie Build, API-Version und -Laufzeit,
+  Laufzeitumgebung, TLS- und Kafka-/Transportstatus.
+
+Der Worker erneuert seinen Heartbeat alle zehn Sekunden mit einer regulären TTL
+von 30 Sekunden. Er darf den Eintrag ausschließlich über die eng begrenzten
+`SECURITY DEFINER`-Funktionen zum Erneuern und Entfernen verändern; direkte
+`SELECT`-, `INSERT`-, `UPDATE`- oder `DELETE`-Rechte auf der zugrunde liegenden
+Tabelle besitzt die Worker-Runtime nicht. PostgreSQL stellt alle Zeitpunkte
+bereit und erzwingt serverseitig eine TTL von höchstens zehn Minuten. Der
+Worker verwendet eine zufällige Lauf-ID und entfernt den eigenen Eintrag bei
+geordnetem Herunterfahren ebenfalls über den Funktionsvertrag. Die Build-Kennung
+ist getrimmt und auf 128 Zeichen begrenzt.
+
+Hostname, PID, Adresse, Datenbank-URL und sonstige Infrastrukturkoordinaten
+werden weder im Heartbeat gespeichert noch an das Admin-Portal ausgegeben. Ein
+fehlender oder abgelaufener Eintrag wird nicht aus einem erfolgreichen
+API-Healthcheck hergeleitet, sondern als unbekannt beziehungsweise nicht aktiv
+bewertet.
+
+Die Admin-Datenbankrolle darf nur die bereinigte Projektion lesen. Sie erhält
+keinen Zugriff auf Heartbeat-Zeilen, Queue-Payloads, Fehlertexte oder Leases.
+Ist Kafka deaktiviert, bleiben die autoritativen PostgreSQL-Rückstände sichtbar,
+während der externe Zustellpfad ausdrücklich als deaktiviert erscheint.
+
+Die Übersicht ist bewusst keine Ausführungsoberfläche. Update, Neustart,
+Rollback, Logs und Hostdiagnose bleiben deaktiviert, weil der API-Prozess weder
+Docker-Socket noch Shell-, `systemd`- oder Paketmanagerrechte besitzt. Dafür ist
+noch kein Ops-Executor angebunden. Ein späterer Ausführungsweg benötigt einen
+getrennten minimal privilegierten Agenten, erneute starke Authentisierung,
+Autorisierung, einen versionierten und idempotenten Command-Vertrag, Audit,
+signierte Release-Metadaten und eine geprüfte Rollbackstrategie. Die verbindliche
+Grenze steht in
+[`ADR-029`](adr/ADR-029-administrative-beobachtung-und-ausfuehrungsgrenze.md).
 
 ## Backup und Wiederherstellung
 
-- Logische PostgreSQL-Backups laufen ausschließlich über `werk_backup`, das nur
-  explizit zur nicht anmeldbaren Lesefähigkeit `werk_backup_reader` wechseln
-  darf. Nur diese Lesefähigkeit besitzt den für einen vollständigen Dump
-  erforderlichen RLS-Bypass; sie besitzt keine Schreib- oder DDL-Rechte.
-- `pg_dump` wird direkt in `age` gestreamt. Es gibt kein unverschlüsseltes
-  Zwischenartefakt. Der Backup-Container erhält nur öffentliche Empfänger.
-- Ciphertext und SHA-256-Prüfsumme werden gemeinsam auf ein vom
-  PostgreSQL-Datenvolume getrenntes Medium kopiert. Mindestens eine private
-  Recovery-Identität wird getrennt und off-site verwahrt.
-- Wiederherstellungen erfolgen nur in eine frische, isolierte Zieldatenbank. Der
-  Restore verlangt ein Bestätigungswort, prüft die leere Datenbank und läuft als
-  einzelne Transaktion über `werk_migrator` und `werk_owner`.
-- `make restore-test` prüft falsche Schlüssel, Datenvollständigkeit,
-  Migration-Checksummen, Objektbesitz, Grants, RLS und Tenant-Isolation in
-  Wegwerf-Volumes. Ein erfolgreicher Test ersetzt nicht den regelmäßigen
-  betrieblichen Restore-Drill mit den tatsächlich verwahrten Artefakten.
+`deploy/backup/werk-backup` nutzt die getrennte Rolle `werk_backup`, streamt
+`pg_dump` direkt durch `age` und schreibt kein unverschlüsseltes
+Zwischenartefakt. Wiederherstellungen sind ausschließlich für eine frische,
+isolierte Zieldatenbank vorgesehen und verlangen eine explizite Bestätigung.
 
-Das aktuelle logische Backup deckt PostgreSQL ab. WAL/PITR sowie ein konsistentes
-Backup des späteren Object Storage werden ergänzt, sobald die dafür notwendige
-Infrastruktur Teil des Betriebsprofils wird.
-
-Das tenantgesicherte Dokument-/Blob-Metadatenschema darf vorher als inaktives
-Fundament vorhanden sein. Ein produktiver Upload bleibt gesperrt, bis der
-S3-kompatible Provider, ein verschlüsseltes Objektmanifest, ein definierter
-Backup-Cut, Orphan-/Missing-Object-Reconciliation und ein gemeinsamer
-PostgreSQL-/Object-Store-Restore-Test geliefert sind. Der Storage-Dienst bleibt
-im internen Datennetz und erhält keine rohe öffentliche `/service`-Route. Der
-Vertrag steht in
-[`ADR-021`](adr/ADR-021-interner-dokument-blob-und-transfervertrag.md);
-Änderungen vorbehalten.
+Der vollständige Restore-Nachweis prüft Daten, Migrationschecksummen, Besitzer,
+Grants, RLS und Tenant-Isolation gegen eine ausdrücklich angegebene
+Wegwerf-Datenbank. Er darf nie implizit eine lokale oder produktive Datenbank
+löschen. WAL/PITR und ein späterer Object Store benötigen eigene
+Wiederherstellungsverträge.
 
 ## Release und Aktualisierung
 
-SemVer-Tags auf einem in `Canary` enthaltenen Commit erzeugen geprüfte
-GitHub-Release-Archive und getrennte GHCR-Images. Produktive Aktualisierungen
-referenzieren eine konkrete Version über `WERK_BUILD_VERSION` und verwenden
-`compose.release.yaml` als letzten Overlay. Operations-Images werden zusätzlich
-mit `compose.release.ops.yaml` eingebunden. `latest` ist kein zulässiger
-Produktions-Pin, auch wenn die Pipeline ihn bei stabilen Releases als
-Komfortalias veröffentlicht.
+SemVer-Tags erzeugen native Linux-Pakete und Quellarchive mit Prüfsummen und
+Herkunftsnachweisen. Die Pipeline veröffentlicht Artefakte, führt aber kein
+Deployment aus. Der Release-Vertrag steht in
+[`ADR-019`](adr/ADR-019-release-kanal-und-softwarelieferkette.md).
 
-Vor einer Aktualisierung werden Datenbackup, Wiederherstellbarkeit,
-Migrationspfad und Zielversion geprüft. Die Pipeline veröffentlicht und
-attestiert Artefakte, deployt aber keine Instanz. Promotion, Wartungsfenster und
-Rollback bleiben Betreiberentscheidungen. Der Vertrag steht in
-[`ADR-019`](adr/ADR-019-release-kanal-und-softwarelieferkette.md); Änderungen
-vorbehalten.
+## Abgrenzung zum HA-Profil
 
-## Abgrenzung zum späteren HA-Profil
-
-Dieses Profil besitzt genau eine Identity-Autorität und keinen Platform Witness.
-Zusätzliche API- oder Worker-Prozesse an derselben PostgreSQL-Datenbank
-ändern daran nichts; sie teilen dieselbe fachliche Wahrheit.
-
-Eine zweite Instanz mit eigener Datenbankkopie ist ein eigenes
-Active/Passive-Betriebsprofil. Automatischer Failover erfordert dort gemäß
-[`ADR-015`](adr/ADR-015-identity-authority-witness-und-failover.md) und
-[`ADR-022`](adr/ADR-022-deploymentprofile-und-platform-witness.md) einen
-unabhängigen QDevice-artigen Platform Witness mit `identity-control`, eine
-exklusive Lease, eine monotone
-Autoritätsgeneration, eine bestätigte Replikationsschranke und extern wirksames
-Fencing. `/health/live` und `/health/ready` bleiben Diagnose- und
-Orchestrierungssignale; sie vergeben keine Schreibhoheit.
-
-Ohne erreichbaren Witness darf eine Reserve nicht automatisch zur
-Identity-Hauptinstanz werden. Das Single-Host-Profil enthält deshalb noch keine
-ungenutzte Quorum-, Replikations- oder Promotion-Infrastruktur.
-
-## Ausbauregel
-
-Ein Wechsel zu mehreren Hosts, HA, Kubernetes oder einem getrennten Object Store
-erfolgt nur mit ADR, Last-/Wiederherstellungstest und dokumentiertem
-Migrationspfad. Für Identity-HA gelten zusätzlich Netztrennungs-,
-Replikations-, Fencing-, Schlüsselrotations- und Rückkehrtests. Die fachlichen
-APIs und Datenhoheiten bleiben unverändert.
+Das Startprofil besitzt genau eine autoritative PostgreSQL-Datenbank. Mehrere
+API- oder Worker-Prozesse an dieser Datenbank teilen dieselbe Wahrheit. Eine
+zweite Datenbankkopie benötigt vor automatischem Failover einen unabhängigen
+Platform Witness, exklusive Lease, monotone Generation, bestätigte
+Replikationsschranke und wirksames Fencing. Ohne diese Nachweise bleibt der
+Single Host bewusst einfach.

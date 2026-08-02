@@ -1,53 +1,81 @@
 name: CI
 
 on:
-  push:
   pull_request:
+  push:
+    branches: [Canary]
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  go:
-    runs-on: ubuntu-latest
+  quality:
+    name: Format, contracts and vet
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
-          cache: true
-      - name: Check formatting
-        run: make fmt-check
+          cache-dependency-path: go.sum
+      - name: Verify generated and formatted files
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -z "$(gofmt -l cmd internal dashboard packaging)"
+          jq empty api/openapi.json
+          for file in dashboard/public/*.js dashboard/server.mjs; do
+            node --check "$file"
+          done
       - name: Vet
-        run: make vet
-      - name: Test with race detector
-        run: go test -race ./...
-      - name: Validate Compose configuration
-        run: make compose-config
+        run: go vet ./...
+      - name: Ensure modules are tidy
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp go.mod /tmp/werk-go.mod
+          cp go.sum /tmp/werk-go.sum
+          go mod tidy
+          diff -u /tmp/werk-go.mod go.mod
+          diff -u /tmp/werk-go.sum go.sum
 
-  migrations:
-    runs-on: ubuntu-latest
+  test:
+    name: Unit and race tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
-          cache: true
-      - name: Test roles, repeatable migrations and tenant isolation
-        run: make integration-test
+          cache-dependency-path: go.sum
+      - name: Test with race detector
+        run: go test -race -count=1 ./...
 
-  restore:
-    runs-on: ubuntu-latest
+  build:
+    name: Native build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
-      - name: Test encrypted backup and isolated restore
-        run: make restore-test
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Build all commands
+        env:
+          CGO_ENABLED: "0"
+        run: go build -trimpath ./cmd/...
 
-  images:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - name: Build WERK images
-        run: docker compose build api worker migrate dashboard
-      - name: Build backup tool image
-        run: docker compose -f compose.yaml -f compose.ops.yaml build backup

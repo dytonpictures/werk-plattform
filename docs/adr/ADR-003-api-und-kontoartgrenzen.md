@@ -29,6 +29,11 @@ machen. Gleichzeitig benötigen Healthchecks und Build-Metadaten keine Kontoart.
 - Service-Identitäten sind von der interaktiven Login-Oberfläche ausgeschlossen.
 - Jeder Bereich erhält eine eigene Authentifizierungs- und Middlewarekette,
   Token-Audience, Sessionart und Berechtigungsdomäne.
+- Die Admin-Zugriffsebene akzeptiert ausschließlich gültige interaktive
+  `admin`-Sessions mit `admin`-Audience, ohne Tenant-Kontext und mit
+  `single-factor`- oder `multi-factor`-Assurance. `unknown` bleibt fail-closed.
+  MFA ist eine nicht blockierende Self-Service-Empfehlung; eine höhere Assurance
+  darf nur ein späterer konkreter, aktionsgebundener Vertrag verlangen.
 - Eine Identität der falschen Kontoart wird nicht durch zusätzliche Rollen
   aufgewertet, sondern an der Bereichsgrenze abgelehnt.
 - Fachneutrale Betriebsendpunkte liegen außerhalb dieser Präfixe.
@@ -46,6 +51,9 @@ unter `/meta` und nicht unter `/api/v1/meta`.
 
 Der gemeinsame Login-Einstieg reduziert sichtbare Angriffs- und
 Enumerationshinweise, ist aber keine Sicherheitsgrenze. Selbst die Kenntnis eines
-internen Admin-Pfads darf ohne passende Admin-Session, Audience, MFA und
-Autorisierung keinerlei Zugriff ermöglichen. Fehlermeldungen der Anmeldung dürfen
-außerdem weder das Vorhandensein eines Kontos noch dessen Kontoart offenlegen.
+internen Admin-Pfads darf ohne passende Admin-Session, `admin`-Audience, bekannte
+Assurance und serverseitige Autorisierung keinerlei Zugriff ermöglichen.
+Fehlermeldungen der Anmeldung dürfen außerdem weder das Vorhandensein eines
+Kontos noch dessen Kontoart offenlegen. Die aktuelle Assurance-Grenze wird durch
+[`ADR-032`](ADR-032-optionale-admin-mfa-und-aktionsgebundene-reauthentifizierung.md)
+festgelegt.

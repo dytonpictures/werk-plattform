@@ -14,6 +14,13 @@ set -eu
 : "${WERK_WORKER_PASSWORD:?WERK_WORKER_PASSWORD is required}"
 : "${WERK_BACKUP_PASSWORD:?WERK_BACKUP_PASSWORD is required}"
 
+script_directory="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)"
+bootstrap_sql_file="${WERK_BOOTSTRAP_SQL_FILE:-${script_directory}/bootstrap-roles.sql}"
+if [ ! -r "${bootstrap_sql_file}" ]; then
+  echo "PostgreSQL role bootstrap SQL is not readable: ${bootstrap_sql_file}" >&2
+  exit 1
+fi
+
 if [ "${WERK_ENV:-development}" = "production" ]; then
   case "${PGPASSWORD}:${WERK_MIGRATOR_PASSWORD}:${WERK_WORK_PASSWORD}:${WERK_IDENTITY_PASSWORD}:${WERK_ADMIN_PASSWORD}:${WERK_SERVICE_PASSWORD}:${WERK_WORKER_PASSWORD}:${WERK_BACKUP_PASSWORD}" in
     *werk-migrator-dev*|*werk-work-dev*|*werk-identity-dev*|*werk-admin-dev*|*werk-service-dev*|*werk-worker-dev*|*werk-backup-dev*|werk:*)
@@ -34,4 +41,4 @@ psql \
   --set=service_password="${WERK_SERVICE_PASSWORD}" \
   --set=worker_password="${WERK_WORKER_PASSWORD}" \
   --set=backup_password="${WERK_BACKUP_PASSWORD}" \
-  --file=/bootstrap/bootstrap-roles.sql
+  --file="${bootstrap_sql_file}"

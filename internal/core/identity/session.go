@@ -46,8 +46,8 @@ type SessionRecord struct {
 }
 
 // ValidateSessionRecord checks lifecycle and the persisted identity boundary
-// without authorizing an API plane. This permits tightly scoped password-change
-// and MFA-enrollment flows to inspect a valid single-factor admin session.
+// without authorizing an API plane. Plane authorization remains a separate,
+// explicit step for normal API access and identity self-service alike.
 func ValidateSessionRecord(record SessionRecord, now time.Time) (AuthenticatedActor, error) {
 	if record.ID.IsZero() || record.Account.AccountID.IsZero() || record.ExpiresAt.IsZero() {
 		return AuthenticatedActor{}, ErrSessionInvalid

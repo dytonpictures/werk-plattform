@@ -12,18 +12,18 @@ Suchprojektionen und Analysen sollen unabhängig nachziehen können. Der
 Transport darf jedoch weder PostgreSQL als fachliche Wahrheit ersetzen noch
 fachliche Transaktionen von einem erreichbaren Broker abhängig machen.
 
-Kafka ist als verteilter Event-Stream für diesen Zweck geeignet und besitzt ein
-offizielles Docker-Image. Seine Exactly-once-Eigenschaften gelten nicht
+Kafka ist als verteilter Event-Stream für diesen Zweck geeignet. Seine
+Exactly-once-Eigenschaften gelten nicht
 automatisch über die Grenze zu einer externen PostgreSQL-Transaktion. Topic-
 Retention und Log-Compaction sind außerdem Transport- beziehungsweise
 Speicherregeln und kein revisionssicherer Aufbewahrungsnachweis.
 
 ## Entscheidung
 
-### Kafka ist ein mitgelieferter Plattformdienst
+### Kafka ist ein optionaler Plattformdienst
 
-Das Single-Host-Compose-Profil enthält einen persistenten Apache-Kafka-Knoten im
-KRaft-Modus und legt drei getrennte Topics an:
+Eine Installation kann einen betreiberverwalteten Apache-Kafka-Broker im
+KRaft-Modus verwenden und legt drei getrennte Topics an:
 
 ```text
 platform.domain-events.v1
@@ -116,8 +116,8 @@ Hold oder ein Langzeitarchiv.
 
 ## Folgen
 
-- Kafka ist ab dem normalen Container- und nativen Entwicklungsstart praktisch
-  angebunden und nicht nur als späterer Erweiterungspunkt dokumentiert.
+- Kafka ist über `.env` zuschaltbar und nicht Voraussetzung für den einfachen
+  nativen Start.
 - Neue Domain-Event-Produzenten verwenden denselben Tag- und Envelope-Vertrag.
 - Ein Kafka-Ausfall erzeugt Rückstau und Alarmbedarf, verliert aber keine
   autoritativen Domain-Events oder Security-Audits.
@@ -129,7 +129,6 @@ Hold oder ein Langzeitarchiv.
 
 ## Referenzen
 
-- [Apache Kafka Docker](https://kafka.apache.org/43/getting-started/docker/)
 - [Apache Kafka Delivery Semantics](https://kafka.apache.org/42/design/design/)
 - [Apache Kafka Security](https://kafka.apache.org/43/security/security-overview/)
 - [Apache Kafka Topic-Konfiguration](https://kafka.apache.org/43/configuration/topic-configs/)

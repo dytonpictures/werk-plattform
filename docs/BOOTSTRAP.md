@@ -34,8 +34,13 @@ es nicht doppelt an und setzt ein bereits geändertes Passwort niemals zurück.
 Außerhalb des Entwicklungsprofils wird `WERK_DEV_WORKER_PASSWORD` abgelehnt;
 Produktion und Tests erhalten dadurch kein implizites Arbeitskonto.
 
-Das Entwicklungsprofil aktiviert Admin-MFA standardmäßig mit einem ausschließlich
-lokalen Entwicklungsschlüssel. Ein bestehender Admin muss sich nach dem Start
-neu anmelden und den TOTP-Faktor einrichten, bevor Benutzer- oder
-Tenantverwaltung freigegeben wird. Produktion verlangt weiterhin einen eigenen,
-explizit gesetzten Schlüssel.
+Das Entwicklungsprofil stellt Admin-MFA standardmäßig mit einem ausschließlich
+lokalen Entwicklungsschlüssel bereit. Ein bestehender Admin kann sich nach dem
+Start mit einer gültigen Single-Factor-Session anmelden und seine normal
+autorisierten Verwaltungsfunktionen nutzen; die Oberfläche empfiehlt die
+selbst gestartete TOTP-Einrichtung, ohne sie zu erzwingen. Nach der Aktivierung
+bleibt TOTP bei späteren Passwortanmeldungen verpflichtend. Produktion verlangt
+weiterhin einen eigenen, explizit gesetzten Schlüssel; dessen Verfügbarkeit ist
+keine globale Einschreibungs- oder Zugangsbedingung. Die Assurance-Grenze steht
+in
+[`ADR-032`](adr/ADR-032-optionale-admin-mfa-und-aktionsgebundene-reauthentifizierung.md).

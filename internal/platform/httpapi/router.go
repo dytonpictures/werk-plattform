@@ -10,6 +10,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	corecache "github.com/dytonpictures/werk/internal/core/cache"
 	"github.com/dytonpictures/werk/internal/platform/config"
 )
 
@@ -30,7 +31,25 @@ func NewRouterWithAdmin(cfg config.Config, readiness readinessChecker, logger *s
 }
 
 type routerServices struct {
-	documents DocumentService
+	documents         DocumentService
+	businessObjects   BusinessObjectService
+	rateLimitCounter  corecache.CounterPort
+	oidcLogin         OIDCLoginService
+	runtimeLogDropped func() uint64
+}
+
+func WithRuntimeLogDroppedCounter(counter func() uint64) RouterOption {
+	return func(services *routerServices) { services.runtimeLogDropped = counter }
+}
+
+func WithRateLimitCounter(counter corecache.CounterPort) RouterOption {
+	return func(services *routerServices) {
+		services.rateLimitCounter = counter
+	}
+}
+
+func WithOIDCLoginService(service OIDCLoginService) RouterOption {
+	return func(services *routerServices) { services.oidcLogin = service }
 }
 
 type RouterOption func(*routerServices)
@@ -38,6 +57,12 @@ type RouterOption func(*routerServices)
 func WithDocumentService(service DocumentService) RouterOption {
 	return func(services *routerServices) {
 		services.documents = service
+	}
+}
+
+func WithBusinessObjectService(service BusinessObjectService) RouterOption {
+	return func(services *routerServices) {
+		services.businessObjects = service
 	}
 }
 
@@ -52,7 +77,7 @@ func NewRouterWithServices(cfg config.Config, readiness readinessChecker, logger
 		}
 	}
 
-	metrics := newHTTPMetrics(cfg.BuildVersion)
+	metrics := newHTTPMetrics(cfg.BuildVersion, services.runtimeLogDropped)
 	router := chi.NewRouter()
 	router.Use(requestIdentityMiddleware)
 	router.Use(transportSecurityMiddleware(cfg.HTTPTrustedProxyCIDRs))
@@ -62,8 +87,8 @@ func NewRouterWithServices(cfg config.Config, readiness readinessChecker, logger
 	router.Use(recoveryMiddleware(logger))
 	router.Use(correlationValidationMiddleware)
 	router.Use(browserMutationProtectionMiddleware(cfg.AllowedOrigins))
-	router.Mount("/api/v1/auth", authRoutes(authService))
-	router.Mount("/api/v1", workRoutes(authService, workspaceService, services.documents))
+	router.Mount("/api/v1/auth", authRoutes(authService, services.rateLimitCounter, services.oidcLogin))
+	router.Mount("/api/v1", workRoutes(authService, workspaceService, services.documents, services.businessObjects))
 	router.Mount("/admin/v1", adminRoutes(authService, adminService))
 
 	router.Get("/health/live", func(writer http.ResponseWriter, _ *http.Request) {
@@ -96,7 +121,7 @@ func NewRouterWithServices(cfg config.Config, readiness readinessChecker, logger
 		})
 	})
 
-	// This endpoint is intended for internal scraping and is not exposed by Caddy.
+	// This endpoint is intended for internal scraping and is not exposed by the public listener.
 	router.Get("/metrics", metrics.serveHTTP)
 
 	router.NotFound(func(writer http.ResponseWriter, request *http.Request) {

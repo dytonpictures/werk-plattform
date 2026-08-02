@@ -24,6 +24,7 @@ func (service *Service) AuthenticateAPIKey(ctx context.Context, token, requestID
 	verificationFailed := false
 	err = service.database.WithinWrite(ctx, func(ctx context.Context, tx database.TenantTx) error {
 		var credentialID string
+		var providerKey string
 		var accountID [16]byte
 		var accountClass string
 		var tenantValue pgtype.UUID
@@ -31,7 +32,8 @@ func (service *Service) AuthenticateAPIKey(ctx context.Context, token, requestID
 		var useCount int64
 		var useLimit *int64
 		if err := tx.QueryRow(ctx, `
-			SELECT credential.id::text, account.id, account.account_class, account.tenant_id,
+			SELECT credential.id::text, credential.provider_key,
+			       account.id, account.account_class, account.tenant_id,
 			       credential.secret_hash, credential.use_count, credential.use_limit
 			FROM werk_core.account_credentials AS credential
 			JOIN werk_core.accounts AS account
@@ -44,9 +46,9 @@ func (service *Service) AuthenticateAPIKey(ctx context.Context, token, requestID
 			  AND account.account_class IN ('service', 'agent')
 			  AND (account.tenant_id IS NULL OR tenant.status = 'active')
 			  AND (account.account_class <> 'agent' OR agent.status = 'active')
-			FOR UPDATE OF credential
+			FOR UPDATE OF account, credential
 		`, digest.PublicIDHash[:], service.now()).Scan(
-			&credentialID, &accountID, &accountClass, &tenantValue,
+			&credentialID, &providerKey, &accountID, &accountClass, &tenantValue,
 			&expectedSecret, &useCount, &useLimit,
 		); err != nil {
 			return identity.ErrInvalidCredentials
@@ -69,6 +71,11 @@ func (service *Service) AuthenticateAPIKey(ctx context.Context, token, requestID
 			verificationFailed = true
 		}
 		actor = resolved
+		if lockActiveProviderBinding(
+			ctx, tx, formatUUID(accountID), providerKey, identity.AuthenticationMethodAPIKey,
+		) != nil {
+			verificationFailed = true
+		}
 		if verificationFailed {
 			tenantID := ""
 			if tenantValue.Valid {

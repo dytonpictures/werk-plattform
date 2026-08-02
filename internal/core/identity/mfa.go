@@ -47,6 +47,19 @@ type TOTPActivation struct {
 	Rotation SessionRotation `json:"-"`
 }
 
+// PasskeyCeremony transports the public-key options and the opaque browser
+// binding separately. The binding is installed as an HttpOnly cookie by the
+// HTTP adapter and never exposed in a JSON response.
+type PasskeyCeremony struct {
+	PublicKey any    `json:"publicKey"`
+	Token     string `json:"-"`
+}
+
+type PasskeyActivation struct {
+	DisplayName string          `json:"display_name"`
+	Rotation    SessionRotation `json:"-"`
+}
+
 type MFAFactorKind string
 
 const (

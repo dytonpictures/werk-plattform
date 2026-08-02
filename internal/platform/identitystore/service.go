@@ -10,26 +10,112 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-webauthn/webauthn/webauthn"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	corecache "github.com/dytonpictures/werk/internal/core/cache"
 	"github.com/dytonpictures/werk/internal/core/identity"
 	"github.com/dytonpictures/werk/internal/core/tenancy"
 	"github.com/dytonpictures/werk/internal/platform/database"
 )
 
-const sessionTTL = 12 * time.Hour
+const (
+	defaultWorkSessionTTL        = 12 * time.Hour
+	defaultAdminSessionTTL       = 8 * time.Hour
+	defaultWorkSessionIdleTTL    = 30 * time.Minute
+	defaultAdminSessionIdleTTL   = 15 * time.Minute
+	sessionActivityWriteInterval = time.Minute
+)
 
 type Service struct {
-	database          *database.IdentityDB
-	now               func() time.Time
-	mfaEnabled        bool
-	mfaCurrentKeyID   string
-	mfaKeys           map[string][]byte
-	dummyPasswordHash []byte
+	database            *database.IdentityDB
+	now                 func() time.Time
+	mfaEnabled          bool
+	adminMFARequired    bool
+	workSessionTTL      time.Duration
+	adminSessionTTL     time.Duration
+	workSessionIdleTTL  time.Duration
+	adminSessionIdleTTL time.Duration
+	mfaCurrentKeyID     string
+	mfaKeys             map[string][]byte
+	webAuthn            *webauthn.WebAuthn
+	dummyPasswordHash   []byte
+	cache               corecache.Port
+}
+
+func WithCache(port corecache.Port) Option {
+	return func(service *Service) error {
+		if port == nil {
+			return errors.New("cache port is required")
+		}
+		service.cache = port
+		return nil
+	}
+}
+
+func WithWebAuthn(relyingPartyID, relyingPartyName string, origins []string) Option {
+	return func(service *Service) error {
+		if strings.TrimSpace(relyingPartyID) == "" || strings.TrimSpace(relyingPartyName) == "" || len(origins) == 0 {
+			return errors.New("WebAuthn relying party configuration is required")
+		}
+		adapter, err := webauthn.New(&webauthn.Config{
+			RPID:          strings.TrimSpace(relyingPartyID),
+			RPDisplayName: strings.TrimSpace(relyingPartyName),
+			RPOrigins:     append([]string(nil), origins...),
+			Timeouts: webauthn.TimeoutsConfig{
+				Login: webauthn.TimeoutConfig{
+					Enforce: true, Timeout: mfaChallengeTTL, TimeoutUVD: mfaChallengeTTL,
+				},
+				Registration: webauthn.TimeoutConfig{
+					Enforce: true, Timeout: mfaChallengeTTL, TimeoutUVD: mfaChallengeTTL,
+				},
+			},
+		})
+		if err != nil {
+			return fmt.Errorf("configure WebAuthn: %w", err)
+		}
+		service.webAuthn = adapter
+		return nil
+	}
 }
 
 type Option func(*Service) error
+
+// WithAdminMFARequired prevents a single-factor administrative session from
+// crossing the admin API plane. Enrollment and identity self-service remain
+// available so a freshly bootstrapped administrator can establish assurance.
+func WithAdminMFARequired(required bool) Option {
+	return func(service *Service) error {
+		if required && !service.mfaEnabled {
+			return errors.New("required admin MFA needs MFA support")
+		}
+		service.adminMFARequired = required
+		return nil
+	}
+}
+
+func WithSessionLifetimes(work, admin time.Duration) Option {
+	return func(service *Service) error {
+		if work < 15*time.Minute || work > 7*24*time.Hour || admin < 15*time.Minute || admin > 24*time.Hour {
+			return errors.New("invalid interactive session lifetimes")
+		}
+		service.workSessionTTL = work
+		service.adminSessionTTL = admin
+		return nil
+	}
+}
+
+func WithSessionIdleLifetimes(work, admin time.Duration) Option {
+	return func(service *Service) error {
+		if work < 5*time.Minute || work > service.workSessionTTL || admin < 5*time.Minute || admin > service.adminSessionTTL {
+			return errors.New("invalid interactive session idle lifetimes")
+		}
+		service.workSessionIdleTTL = work
+		service.adminSessionIdleTTL = admin
+		return nil
+	}
+}
 
 func WithMFA(enabled bool, encryptionKey []byte) Option {
 	keys := map[string][]byte{}
@@ -78,16 +164,20 @@ func stableMFAKeyID(value string) bool {
 }
 
 type SessionView struct {
-	AccountClass            identity.AccountClass            `json:"account_class"`
-	Audience                identity.Audience                `json:"audience"`
-	TenantID                *string                          `json:"tenant_id,omitempty"`
-	Profile                 ProfileView                      `json:"profile"`
-	HomePath                string                           `json:"home_path"`
-	Preferences             PreferencesView                  `json:"preferences"`
-	MustChangePassword      bool                             `json:"must_change_password"`
-	AuthenticationAssurance identity.AuthenticationAssurance `json:"authentication_assurance"`
-	MFAEnrollmentRequired   bool                             `json:"mfa_enrollment_required"`
-	ExpiresAt               time.Time                        `json:"expires_at"`
+	AccountClass             identity.AccountClass            `json:"account_class"`
+	Audience                 identity.Audience                `json:"audience"`
+	TenantID                 *string                          `json:"tenant_id,omitempty"`
+	Profile                  ProfileView                      `json:"profile"`
+	HomePath                 string                           `json:"home_path"`
+	Preferences              PreferencesView                  `json:"preferences"`
+	MustChangePassword       bool                             `json:"must_change_password"`
+	AuthenticationAssurance  identity.AuthenticationAssurance `json:"authentication_assurance"`
+	MFAEnrollmentRecommended bool                             `json:"mfa_enrollment_recommended"`
+	AdminAssuranceRequired   bool                             `json:"admin_assurance_required"`
+	// Deprecated: MFA enrollment no longer gates the administration plane.
+	MFAEnrollmentRequired bool      `json:"mfa_enrollment_required"`
+	ExpiresAt             time.Time `json:"expires_at"`
+	IdleExpiresAt         time.Time `json:"idle_expires_at"`
 }
 
 type PreferencesView struct {
@@ -105,6 +195,7 @@ type ProfileView struct {
 type accountRecord struct {
 	actor              identity.AuthenticatedActor
 	credentialID       string
+	providerKey        string
 	secretHash         []byte
 	rehashedSecret     []byte
 	mustChangePassword bool
@@ -115,7 +206,11 @@ func New(database *database.IdentityDB, options ...Option) (*Service, error) {
 	if database == nil {
 		return nil, errors.New("identity database is required")
 	}
-	service := &Service{database: database, now: func() time.Time { return time.Now().UTC() }}
+	service := &Service{
+		database: database, now: func() time.Time { return time.Now().UTC() },
+		workSessionTTL: defaultWorkSessionTTL, adminSessionTTL: defaultAdminSessionTTL,
+		workSessionIdleTTL: defaultWorkSessionIdleTTL, adminSessionIdleTTL: defaultAdminSessionIdleTTL,
+	}
 	dummyHash, err := identity.HashPassword("invalid-account-timing-equalizer")
 	if err != nil {
 		return nil, err
@@ -128,6 +223,9 @@ func New(database *database.IdentityDB, options ...Option) (*Service, error) {
 		if err := option(service); err != nil {
 			return nil, err
 		}
+	}
+	if service.workSessionIdleTTL > service.workSessionTTL || service.adminSessionIdleTTL > service.adminSessionTTL {
+		return nil, errors.New("session idle lifetime exceeds absolute lifetime")
 	}
 	return service, nil
 }
@@ -256,9 +354,6 @@ func (service *Service) LoginWithMFA(ctx context.Context, loginName, password, r
 		if err != nil {
 			failureKey = unknownLoginThrottleKey()
 		}
-		if service.recordLoginFailure(ctx, failureKey) != nil {
-			return identity.LoginResult{}, identity.ErrInvalidCredentials
-		}
 		accountID := ""
 		tenantID := ""
 		if err == nil {
@@ -267,10 +362,9 @@ func (service *Service) LoginWithMFA(ctx context.Context, loginName, password, r
 				tenantID = formatUUID(*record.actor.TenantID)
 			}
 		}
-		_ = service.auditSecurityEvent(ctx, "identity.login.denied.v1", "denied", accountID, tenantID, requestID, correlationID, `{"reason":"invalid-credentials"}`)
-		return identity.LoginResult{}, identity.ErrInvalidCredentials
-	}
-	if service.clearLoginFailures(ctx, throttleKey) != nil {
+		if service.recordLoginFailure(ctx, failureKey, accountID, tenantID, requestID, correlationID) != nil {
+			return identity.LoginResult{}, identity.ErrInvalidCredentials
+		}
 		return identity.LoginResult{}, identity.ErrInvalidCredentials
 	}
 	if identity.PasswordNeedsRehash(record.secretHash) {
@@ -280,12 +374,12 @@ func (service *Service) LoginWithMFA(ctx context.Context, loginName, password, r
 		}
 	}
 	if service.mfaEnabled && record.actor.AccountClass == identity.AccountClassAdmin {
-		return service.beginAdminMFA(ctx, record, requestID, correlationID)
+		return service.beginAdminMFA(ctx, record, throttleKey, requestID, correlationID)
 	}
-	return service.issueLoginSession(ctx, record, identity.AssuranceSingleFactor, requestID, correlationID)
+	return service.issueLoginSession(ctx, record, identity.AssuranceSingleFactor, throttleKey, requestID, correlationID)
 }
 
-func (service *Service) issueLoginSession(ctx context.Context, record accountRecord, assurance identity.AuthenticationAssurance, requestID, correlationID string) (identity.LoginResult, error) {
+func (service *Service) issueLoginSession(ctx context.Context, record accountRecord, assurance identity.AuthenticationAssurance, throttleKey [sha256.Size]byte, requestID, correlationID string) (identity.LoginResult, error) {
 	token, tokenHash, err := newSessionToken()
 	if err != nil {
 		return identity.LoginResult{}, identity.ErrInvalidCredentials
@@ -294,7 +388,7 @@ func (service *Service) issueLoginSession(ctx context.Context, record accountRec
 	if err != nil {
 		return identity.LoginResult{}, identity.ErrInvalidCredentials
 	}
-	expiresAt := service.now().Add(sessionTTL)
+	expiresAt := service.now().Add(service.sessionLifetime(record.actor.Audience))
 	err = service.database.WithinWrite(ctx, func(ctx context.Context, tx database.TenantTx) error {
 		var currentGeneration int64
 		if err := tx.QueryRow(ctx, `
@@ -304,6 +398,20 @@ func (service *Service) issueLoginSession(ctx context.Context, record accountRec
 			FOR UPDATE
 		`, formatUUID(record.actor.AccountID)).Scan(&currentGeneration); err != nil || currentGeneration != record.sessionGeneration {
 			return identity.ErrInvalidCredentials
+		}
+		providerKey, currentHash, err := lockPasswordCredential(
+			ctx, tx, formatUUID(record.actor.AccountID), record.credentialID, service.now(),
+		)
+		if err != nil || providerKey != record.providerKey || !samePasswordHash(currentHash, record.secretHash) {
+			return identity.ErrInvalidCredentials
+		}
+		if err := lockActiveProviderBinding(
+			ctx, tx, formatUUID(record.actor.AccountID), providerKey, identity.AuthenticationMethodPassword,
+		); err != nil {
+			return identity.ErrInvalidCredentials
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM werk_core.identity_auth_throttles WHERE subject_hash = $1`, throttleKey[:]); err != nil {
+			return err
 		}
 		if len(record.rehashedSecret) != 0 {
 			command, err := tx.Exec(ctx, `
@@ -350,66 +458,33 @@ func (service *Service) issueLoginSession(ctx context.Context, record accountRec
 }
 
 func (service *Service) Session(ctx context.Context, token string) (any, error) {
-	if token == "" {
-		return nil, identity.ErrSessionInvalid
-	}
-	tokenHash := sha256.Sum256([]byte(token))
-	var view SessionView
-	var accountClass string
-	var audience string
-	var authenticationKind string
-	var tenantID pgtype.UUID
-	var sessionID [16]byte
-	var accountID [16]byte
-	err := service.database.WithinRead(ctx, func(ctx context.Context, tx database.TenantTx) error {
-		return tx.QueryRow(ctx, `
-			SELECT session.id, account.id, account.account_class, session.audience,
-			       session.authentication_kind, session.tenant_id,
-			       account.login_name,
-			       COALESCE(admin_subject.display_name, party.display_name),
-			       account.must_change_password, session.authentication_assurance, session.expires_at,
-			       COALESCE(preference.navigation_mode, 'bar')
-			FROM werk_core.sessions AS session
-			JOIN werk_core.accounts AS account ON account.id = session.account_id
-			LEFT JOIN werk_core.admin_subjects AS admin_subject ON admin_subject.id = account.admin_subject_id
-			LEFT JOIN werk_core.parties AS party
-			  ON party.tenant_id = account.tenant_id AND party.id = account.person_party_id
-			LEFT JOIN werk_core.account_ui_preferences AS preference ON preference.account_id = account.id
-			WHERE session.token_hash = $1 AND session.revoked_at IS NULL
-			  AND session.expires_at > $2 AND account.status = 'active'
-			  AND session.session_generation = account.session_generation
-		`, tokenHash[:], service.now()).Scan(
-			&sessionID, &accountID, &accountClass, &audience, &authenticationKind, &tenantID, &view.Profile.LoginName,
-			&view.Profile.DisplayName, &view.MustChangePassword, &view.AuthenticationAssurance, &view.ExpiresAt,
-			&view.Preferences.NavigationMode,
-		)
-	})
+	snapshot, err := service.loadSessionSnapshot(ctx, token)
 	if err != nil {
 		return nil, identity.ErrSessionInvalid
 	}
-	view.AccountClass = identity.AccountClass(accountClass)
-	view.Audience = identity.Audience(audience)
-	actor := identity.AuthenticatedActor{
-		AccountID: identity.AccountID(accountID), AccountClass: view.AccountClass,
-		Audience: view.Audience, Kind: identity.AuthenticationKind(authenticationKind),
-		Assurance: view.AuthenticationAssurance,
+	view := SessionView{
+		AccountClass: snapshot.actor.AccountClass, Audience: snapshot.actor.Audience,
+		Profile:            ProfileView{DisplayName: snapshot.displayName, LoginName: snapshot.loginName},
+		Preferences:        PreferencesView{NavigationMode: snapshot.navigationMode},
+		MustChangePassword: snapshot.mustChange, AuthenticationAssurance: snapshot.actor.Assurance,
+		ExpiresAt: snapshot.expiresAt,
+	}
+	view.IdleExpiresAt = snapshot.lastSeenAt.Add(service.sessionIdleLifetime(snapshot.actor.Audience))
+	if view.IdleExpiresAt.After(view.ExpiresAt) {
+		view.IdleExpiresAt = view.ExpiresAt
 	}
 	view.HomePath = "/app"
 	if view.AccountClass == identity.AccountClassAdmin {
 		view.HomePath = "/admin"
-		view.MFAEnrollmentRequired = service.mfaEnabled && view.AuthenticationAssurance != identity.AssuranceMultiFactor
+		view.MFAEnrollmentRecommended = service.mfaEnabled && view.AuthenticationAssurance != identity.AssuranceMultiFactor
+		view.AdminAssuranceRequired = service.adminMFARequired
+		if service.adminMFARequired && view.AuthenticationAssurance != identity.AssuranceMultiFactor {
+			view.HomePath = "/mfa-setup"
+		}
 	}
-	if tenantID.Valid {
-		value := formatUUID(tenantID.Bytes)
+	if snapshot.actor.TenantID != nil {
+		value := formatUUID(*snapshot.actor.TenantID)
 		view.TenantID = &value
-		tenant := tenancy.TenantID(tenantID.Bytes)
-		actor.TenantID = &tenant
-	}
-	if _, err := identity.ValidateSessionRecord(identity.SessionRecord{
-		ID: identity.SessionID(sessionID), Account: actor, Audience: view.Audience,
-		TenantID: actor.TenantID, ExpiresAt: view.ExpiresAt,
-	}, service.now()); err != nil {
-		return nil, identity.ErrSessionInvalid
 	}
 	return view, nil
 }
@@ -474,7 +549,7 @@ func (service *Service) LogoutWithAudit(ctx context.Context, token, requestID, c
 		return identity.ErrSessionInvalid
 	}
 	tokenHash := sha256.Sum256([]byte(token))
-	return service.database.WithinWrite(ctx, func(ctx context.Context, tx database.TenantTx) error {
+	err := service.database.WithinWrite(ctx, func(ctx context.Context, tx database.TenantTx) error {
 		var accountID [16]byte
 		var sessionID [16]byte
 		var tenantID pgtype.UUID
@@ -522,6 +597,10 @@ func (service *Service) LogoutWithAudit(ctx context.Context, token, requestID, c
 		}
 		return service.insertSecurityAuditForTenant(ctx, tx, "identity.logout.succeeded.v1", "succeeded", formatUUID(accountID), formatUUID(sessionID), tenant, requestID, correlationID, `{}`)
 	})
+	if err == nil {
+		service.markSessionInvalid(ctx, tokenHash[:])
+	}
+	return err
 }
 
 func (service *Service) ChangePassword(ctx context.Context, token, currentPassword, newPassword string) (identity.SessionRotation, error) {
@@ -553,6 +632,8 @@ func (service *Service) ChangePasswordWithAudit(ctx context.Context, token, curr
 		var sessionID [16]byte
 		var tenantID pgtype.UUID
 		var currentHash []byte
+		var credentialID string
+		var providerKey string
 		var audience identity.Audience
 		var assurance identity.AuthenticationAssurance
 		var authenticationKind identity.AuthenticationKind
@@ -571,6 +652,7 @@ func (service *Service) ChangePasswordWithAudit(ctx context.Context, token, curr
 		}
 		if err := tx.QueryRow(ctx, `
 			SELECT account.id, session.id, session.tenant_id, credential.secret_hash,
+			       credential.id::text, credential.provider_key,
 			       session.audience, session.authentication_assurance, session.authentication_kind,
 			       session.expires_at
 			FROM werk_core.sessions AS session
@@ -586,7 +668,7 @@ func (service *Service) ChangePasswordWithAudit(ctx context.Context, token, curr
 			  AND account.id = $3::uuid AND session.session_generation = $4
 			FOR UPDATE OF session, credential
 		`, tokenHash[:], service.now(), passwordSnapshot.accountID, sessionGeneration).Scan(
-			&accountID, &sessionID, &tenantID, &currentHash,
+			&accountID, &sessionID, &tenantID, &currentHash, &credentialID, &providerKey,
 			&audience, &assurance, &authenticationKind, &sourceExpiresAt,
 		); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
@@ -594,7 +676,13 @@ func (service *Service) ChangePasswordWithAudit(ctx context.Context, token, curr
 			}
 			return err
 		}
-		if formatUUID(accountID) != passwordSnapshot.accountID || !samePasswordHash(currentHash, passwordSnapshot.passwordHash) {
+		if formatUUID(accountID) != passwordSnapshot.accountID || credentialID != passwordSnapshot.credentialID ||
+			providerKey != passwordSnapshot.providerKey || !samePasswordHash(currentHash, passwordSnapshot.passwordHash) {
+			return identity.ErrInvalidCredentials
+		}
+		if err := lockActiveProviderBinding(
+			ctx, tx, formatUUID(accountID), providerKey, identity.AuthenticationMethodPassword,
+		); err != nil {
 			return identity.ErrInvalidCredentials
 		}
 		if err := rotation.limitExpiresAt(sourceExpiresAt); err != nil {
@@ -655,15 +743,22 @@ func loadAccountByLogin(ctx context.Context, tx database.TenantTx, loginName str
 	var tenantID pgtype.UUID
 	err := tx.QueryRow(ctx, `
 		SELECT account.id, account.account_class, account.status, account.tenant_id,
-		       account.must_change_password, credential.id::text,
+		       account.must_change_password, credential.id::text, credential.provider_key,
 		       credential.assurance, credential.secret_hash, account.session_generation
 		FROM werk_core.accounts AS account
 		JOIN werk_core.account_credentials AS credential ON credential.account_id = account.id
 		WHERE account.login_name = $1 AND credential.credential_kind = 'password'
 		  AND credential.status = 'active'
 		  AND (credential.expires_at IS NULL OR credential.expires_at > $2)
-	`, loginName, now).Scan(&accountID, &accountClass, &status, &tenantID, &record.mustChangePassword, &record.credentialID, &assurance, &record.secretHash, &record.sessionGeneration)
+	`, loginName, now).Scan(
+		&accountID, &accountClass, &status, &tenantID,
+		&record.mustChangePassword, &record.credentialID, &record.providerKey,
+		&assurance, &record.secretHash, &record.sessionGeneration,
+	)
 	if err != nil || status != "active" {
+		return accountRecord{}, identity.ErrInvalidCredentials
+	}
+	if err := requireActiveProviderBinding(ctx, tx, formatUUID(accountID), record.providerKey, identity.AuthenticationMethodPassword); err != nil {
 		return accountRecord{}, identity.ErrInvalidCredentials
 	}
 	record.actor = identity.AuthenticatedActor{

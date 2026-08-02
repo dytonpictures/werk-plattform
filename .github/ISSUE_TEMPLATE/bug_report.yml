@@ -1,0 +1,36 @@
+name: Fehlerbericht
+description: Reproduzierbaren Produkt- oder Plattformfehler melden
+title: "[Bug]: "
+labels: [bug, triage]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: Beschreibung
+      description: Was ist passiert und was wurde erwartet?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduktion
+      description: Minimale Schritte ohne Secrets oder personenbezogene Daten.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version / Commit
+    validations:
+      required: true
+  - type: dropdown
+    id: security
+    attributes:
+      label: Sicherheitsbezug
+      options:
+        - Nein
+        - Unsicher
+        - Ja – nicht hier veröffentlichen, Security Policy verwenden
+    validations:
+      required: true
+

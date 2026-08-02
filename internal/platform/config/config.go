@@ -16,23 +16,37 @@ import (
 )
 
 type Config struct {
-	Environment             string
-	HTTPAddress             string
-	HTTPServerTLS           transportsecurity.ServerOptions
-	HTTPTrustedProxyCIDRs   []netip.Prefix
-	DatabaseURL             string
-	IdentityDatabaseURL     string
-	AdminDatabaseURL        string
-	BootstrapAdminPassword  string
-	DevelopmentWorkPassword string
-	IdentityMFAEnabled      bool
-	IdentityMFAKey          []byte
-	IdentityMFACurrentKeyID string
-	IdentityMFAKeys         map[string][]byte
-	AllowedOrigins          []string
-	WorkerConcurrency       int
-	BuildVersion            string
-	Kafka                   KafkaConfig
+	Environment                 string
+	HTTPAddress                 string
+	HTTPServerTLS               transportsecurity.ServerOptions
+	HTTPTrustedProxyCIDRs       []netip.Prefix
+	DatabaseURL                 string
+	IdentityDatabaseURL         string
+	AdminDatabaseURL            string
+	BootstrapAdminPassword      string
+	DevelopmentWorkPassword     string
+	IdentityMFAEnabled          bool
+	IdentityAdminMFARequired    bool
+	IdentityWorkSessionTTL      time.Duration
+	IdentityAdminSessionTTL     time.Duration
+	IdentityWorkSessionIdleTTL  time.Duration
+	IdentityAdminSessionIdleTTL time.Duration
+	IdentityMFAKey              []byte
+	IdentityMFACurrentKeyID     string
+	IdentityMFAKeys             map[string][]byte
+	WebAuthnRPID                string
+	WebAuthnRPName              string
+	WebAuthnOrigins             []string
+	AllowedOrigins              []string
+	WorkerConcurrency           int
+	BuildVersion                string
+	Kafka                       KafkaConfig
+	Cache                       CacheConfig
+}
+
+type CacheConfig struct {
+	Enabled bool
+	URL     string
 }
 
 type KafkaConfig struct {
@@ -54,6 +68,25 @@ type KafkaConfig struct {
 	AuditConcurrency   int
 }
 
+// WorkerConfig contains only values the asynchronous runtime is allowed to
+// receive. In particular it carries no API TLS private-key, Identity, Admin or
+// browser-session configuration.
+type WorkerConfig struct {
+	Environment       string
+	DatabaseURL       string
+	WorkerConcurrency int
+	BuildVersion      string
+	Kafka             KafkaConfig
+}
+
+// MigrationConfig contains only the constrained migrator connection and
+// logging coordinates.
+type MigrationConfig struct {
+	Environment  string
+	DatabaseURL  string
+	BuildVersion string
+}
+
 func Load() (Config, error) {
 	return load(os.LookupEnv)
 }
@@ -65,9 +98,33 @@ func LoadAPI() (Config, error) {
 	return loadAPI(os.LookupEnv)
 }
 
+func LoadWorker() (WorkerConfig, error) {
+	return loadWorker(os.LookupEnv)
+}
+
+func LoadMigration() (MigrationConfig, error) {
+	return loadMigration(os.LookupEnv)
+}
+
+func LoadAPIFromMap(values map[string]string) (Config, error) {
+	return loadAPI(mapLookup(values))
+}
+
+func LoadWorkerFromMap(values map[string]string) (WorkerConfig, error) {
+	return loadWorker(mapLookup(values))
+}
+
+func LoadMigrationFromMap(values map[string]string) (MigrationConfig, error) {
+	return loadMigration(mapLookup(values))
+}
+
 func NewLogger(cfg Config, component ...string) *slog.Logger {
+	return NewComponentLogger(cfg.Environment, cfg.BuildVersion, component...)
+}
+
+func NewComponentLogger(environment, buildVersion string, component ...string) *slog.Logger {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-		Level: level(cfg.Environment),
+		Level: level(environment),
 	}))
 	service := "platform"
 	if len(component) > 0 && stableConfigKey(component[0]) {
@@ -75,12 +132,19 @@ func NewLogger(cfg Config, component ...string) *slog.Logger {
 	}
 	return logger.With(
 		"service", service,
-		"environment", cfg.Environment,
-		"build_version", cfg.BuildVersion,
+		"environment", environment,
+		"build_version", buildVersion,
 	)
 }
 
 type lookupEnvironment func(string) (string, bool)
+
+func mapLookup(values map[string]string) lookupEnvironment {
+	return func(key string) (string, bool) {
+		value, exists := values[key]
+		return value, exists
+	}
+}
 
 func load(lookup lookupEnvironment) (Config, error) {
 	environment := value(lookup, "WERK_ENV", "development")
@@ -101,11 +165,11 @@ func load(lookup lookupEnvironment) (Config, error) {
 		return Config{}, err
 	}
 
-	databaseURL, databaseURLIsSet := lookup("DATABASE_URL")
+	databaseURL, databaseURLIsSet := aliasedEnvironment(lookup, "WORK_DATABASE_URL", "DATABASE_URL")
 	databaseURL = strings.TrimSpace(databaseURL)
 	if databaseURL == "" {
 		if environment == "production" {
-			return Config{}, fmt.Errorf("DATABASE_URL is required in production")
+			return Config{}, fmt.Errorf("WORK_DATABASE_URL is required in production")
 		}
 		databaseURL = "postgres://werk:werk@localhost:5432/werk?sslmode=disable"
 		databaseURLIsSet = false
@@ -119,7 +183,7 @@ func load(lookup lookupEnvironment) (Config, error) {
 		}
 	}
 	if environment == "production" && !databaseURLIsSet {
-		return Config{}, fmt.Errorf("DATABASE_URL is required in production")
+		return Config{}, fmt.Errorf("WORK_DATABASE_URL is required in production")
 	}
 
 	identityDatabaseURL, identityDatabaseURLIsSet := lookup("IDENTITY_DATABASE_URL")
@@ -226,6 +290,33 @@ func load(lookup lookupEnvironment) (Config, error) {
 	if environment == "production" && !identityMFAEnabled {
 		return Config{}, fmt.Errorf("WERK_IDENTITY_MFA_ENABLED must be true in production")
 	}
+	identityAdminMFARequired := environment == "production"
+	if configured, ok := lookup("WERK_IDENTITY_ADMIN_MFA_REQUIRED"); ok && strings.TrimSpace(configured) != "" {
+		parsed, err := strconv.ParseBool(strings.TrimSpace(configured))
+		if err != nil {
+			return Config{}, fmt.Errorf("WERK_IDENTITY_ADMIN_MFA_REQUIRED must be a boolean")
+		}
+		identityAdminMFARequired = parsed
+	}
+	if identityAdminMFARequired && !identityMFAEnabled {
+		return Config{}, fmt.Errorf("WERK_IDENTITY_ADMIN_MFA_REQUIRED requires WERK_IDENTITY_MFA_ENABLED")
+	}
+	identityWorkSessionTTL, err := time.ParseDuration(value(lookup, "WERK_IDENTITY_WORK_SESSION_TTL", "12h"))
+	if err != nil || identityWorkSessionTTL < 15*time.Minute || identityWorkSessionTTL > 7*24*time.Hour {
+		return Config{}, fmt.Errorf("WERK_IDENTITY_WORK_SESSION_TTL must be between 15m and 168h")
+	}
+	identityAdminSessionTTL, err := time.ParseDuration(value(lookup, "WERK_IDENTITY_ADMIN_SESSION_TTL", "8h"))
+	if err != nil || identityAdminSessionTTL < 15*time.Minute || identityAdminSessionTTL > 24*time.Hour {
+		return Config{}, fmt.Errorf("WERK_IDENTITY_ADMIN_SESSION_TTL must be between 15m and 24h")
+	}
+	identityWorkSessionIdleTTL, err := time.ParseDuration(value(lookup, "WERK_IDENTITY_WORK_SESSION_IDLE_TTL", "30m"))
+	if err != nil || identityWorkSessionIdleTTL < 5*time.Minute || identityWorkSessionIdleTTL > identityWorkSessionTTL {
+		return Config{}, fmt.Errorf("WERK_IDENTITY_WORK_SESSION_IDLE_TTL must be between 5m and WERK_IDENTITY_WORK_SESSION_TTL")
+	}
+	identityAdminSessionIdleTTL, err := time.ParseDuration(value(lookup, "WERK_IDENTITY_ADMIN_SESSION_IDLE_TTL", "15m"))
+	if err != nil || identityAdminSessionIdleTTL < 5*time.Minute || identityAdminSessionIdleTTL > identityAdminSessionTTL {
+		return Config{}, fmt.Errorf("WERK_IDENTITY_ADMIN_SESSION_IDLE_TTL must be between 5m and WERK_IDENTITY_ADMIN_SESSION_TTL")
+	}
 	allowedOriginsValue := value(lookup, "WERK_ALLOWED_ORIGINS", "")
 	if allowedOriginsValue == "" && environment != "production" {
 		allowedOriginsValue = "http://localhost:3000,http://127.0.0.1:3000"
@@ -243,6 +334,34 @@ func load(lookup lookupEnvironment) (Config, error) {
 		}
 		allowedOrigins = append(allowedOrigins, origin)
 	}
+	webAuthnRPID := strings.ToLower(strings.TrimSpace(value(lookup, "WEBAUTHN_RP_ID", "")))
+	if webAuthnRPID == "" {
+		parsed, _ := url.Parse(allowedOrigins[0])
+		webAuthnRPID = strings.ToLower(parsed.Hostname())
+	}
+	if webAuthnRPID == "" || strings.ContainsAny(webAuthnRPID, "/:@") || len(webAuthnRPID) > 253 {
+		return Config{}, fmt.Errorf("WEBAUTHN_RP_ID must be a valid hostname without scheme or port")
+	}
+	webAuthnRPName := strings.TrimSpace(value(lookup, "WEBAUTHN_RP_NAME", "WERK"))
+	if webAuthnRPName == "" || len(webAuthnRPName) > 120 {
+		return Config{}, fmt.Errorf("WEBAUTHN_RP_NAME must contain between 1 and 120 characters")
+	}
+	webAuthnOriginsValue := value(lookup, "WEBAUTHN_ORIGINS", allowedOrigins[0])
+	webAuthnOrigins := make([]string, 0, 2)
+	for _, candidate := range strings.Split(webAuthnOriginsValue, ",") {
+		origin := strings.TrimSpace(candidate)
+		parsed, err := url.Parse(origin)
+		hostname := strings.ToLower(parsed.Hostname())
+		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" ||
+			(environment == "production" && parsed.Scheme != "https") ||
+			(hostname != webAuthnRPID && !strings.HasSuffix(hostname, "."+webAuthnRPID)) {
+			return Config{}, fmt.Errorf("WEBAUTHN_ORIGINS contains an origin outside WEBAUTHN_RP_ID")
+		}
+		webAuthnOrigins = append(webAuthnOrigins, origin)
+	}
+	if len(webAuthnOrigins) == 0 {
+		return Config{}, fmt.Errorf("WEBAUTHN_ORIGINS requires at least one origin")
+	}
 	workerConcurrency, err := strconv.Atoi(value(lookup, "WERK_WORKER_CONCURRENCY", "4"))
 	if err != nil || workerConcurrency < 1 || workerConcurrency > 128 {
 		return Config{}, fmt.Errorf("WERK_WORKER_CONCURRENCY must be between 1 and 128")
@@ -251,26 +370,166 @@ func load(lookup lookupEnvironment) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	cache, err := loadCacheConfig(lookup, environment)
+	if err != nil {
+		return Config{}, err
+	}
 
 	return Config{
-		Environment:             environment,
-		HTTPAddress:             httpAddress,
-		HTTPServerTLS:           httpServerTLS,
-		HTTPTrustedProxyCIDRs:   httpTrustedProxyCIDRs,
-		DatabaseURL:             databaseURL,
-		IdentityDatabaseURL:     identityDatabaseURL,
-		AdminDatabaseURL:        adminDatabaseURL,
-		BootstrapAdminPassword:  bootstrapAdminPassword,
-		DevelopmentWorkPassword: developmentWorkPassword,
-		IdentityMFAEnabled:      identityMFAEnabled,
-		IdentityMFAKey:          identityMFAKey,
-		IdentityMFACurrentKeyID: identityMFACurrentKeyID,
-		IdentityMFAKeys:         identityMFAKeys,
-		AllowedOrigins:          allowedOrigins,
-		WorkerConcurrency:       workerConcurrency,
-		BuildVersion:            value(lookup, "WERK_BUILD_VERSION", "dev"),
-		Kafka:                   kafka,
+		Environment:                 environment,
+		HTTPAddress:                 httpAddress,
+		HTTPServerTLS:               httpServerTLS,
+		HTTPTrustedProxyCIDRs:       httpTrustedProxyCIDRs,
+		DatabaseURL:                 databaseURL,
+		IdentityDatabaseURL:         identityDatabaseURL,
+		AdminDatabaseURL:            adminDatabaseURL,
+		BootstrapAdminPassword:      bootstrapAdminPassword,
+		DevelopmentWorkPassword:     developmentWorkPassword,
+		IdentityMFAEnabled:          identityMFAEnabled,
+		IdentityAdminMFARequired:    identityAdminMFARequired,
+		IdentityWorkSessionTTL:      identityWorkSessionTTL,
+		IdentityAdminSessionTTL:     identityAdminSessionTTL,
+		IdentityWorkSessionIdleTTL:  identityWorkSessionIdleTTL,
+		IdentityAdminSessionIdleTTL: identityAdminSessionIdleTTL,
+		IdentityMFAKey:              identityMFAKey,
+		IdentityMFACurrentKeyID:     identityMFACurrentKeyID,
+		IdentityMFAKeys:             identityMFAKeys,
+		WebAuthnRPID:                webAuthnRPID,
+		WebAuthnRPName:              webAuthnRPName,
+		WebAuthnOrigins:             webAuthnOrigins,
+		AllowedOrigins:              allowedOrigins,
+		WorkerConcurrency:           workerConcurrency,
+		BuildVersion:                value(lookup, "WERK_BUILD_VERSION", "dev"),
+		Kafka:                       kafka,
+		Cache:                       cache,
 	}, nil
+}
+
+func loadCacheConfig(lookup lookupEnvironment, environment string) (CacheConfig, error) {
+	rawURL := strings.TrimSpace(value(lookup, "WERK_CACHE_URL", ""))
+	if rawURL == "" {
+		return CacheConfig{}, nil
+	}
+	parsed, err := url.Parse(rawURL)
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "redis" && parsed.Scheme != "rediss" && parsed.Scheme != "valkey" && parsed.Scheme != "valkeys") || parsed.Fragment != "" {
+		return CacheConfig{}, fmt.Errorf("WERK_CACHE_URL must be a redis(s) or valkey(s) URL")
+	}
+	if environment == "production" && parsed.Scheme != "rediss" && parsed.Scheme != "valkeys" {
+		return CacheConfig{}, fmt.Errorf("WERK_CACHE_URL must use TLS in production")
+	}
+	pathDatabase := strings.TrimPrefix(parsed.EscapedPath(), "/")
+	if pathDatabase != "" {
+		databaseNumber, parseErr := strconv.Atoi(pathDatabase)
+		if parseErr != nil || databaseNumber < 0 {
+			return CacheConfig{}, fmt.Errorf("WERK_CACHE_URL contains an invalid database number")
+		}
+	}
+	if queryDatabase := parsed.Query().Get("db"); queryDatabase != "" {
+		databaseNumber, parseErr := strconv.Atoi(queryDatabase)
+		if parseErr != nil || databaseNumber < 0 {
+			return CacheConfig{}, fmt.Errorf("WERK_CACHE_URL contains an invalid db query parameter")
+		}
+	}
+	if skipVerifyValue, configured := parsed.Query()["skip_verify"]; configured {
+		if len(skipVerifyValue) != 1 {
+			return CacheConfig{}, fmt.Errorf("WERK_CACHE_URL contains an invalid skip_verify query parameter")
+		}
+		skipVerify, parseErr := strconv.ParseBool(skipVerifyValue[0])
+		if parseErr != nil {
+			return CacheConfig{}, fmt.Errorf("WERK_CACHE_URL contains an invalid skip_verify query parameter")
+		}
+		if environment == "production" && skipVerify {
+			return CacheConfig{}, fmt.Errorf("WERK_CACHE_URL cannot disable TLS verification in production")
+		}
+	}
+	return CacheConfig{Enabled: true, URL: rawURL}, nil
+}
+
+func loadWorker(lookup lookupEnvironment) (WorkerConfig, error) {
+	environment, err := loadEnvironment(lookup)
+	if err != nil {
+		return WorkerConfig{}, err
+	}
+	databaseURL, err := loadCommandDatabaseURL(
+		lookup, environment, "WORKER_DATABASE_URL",
+		"postgres://werk_worker_runtime:werk-worker-dev@localhost:5432/werk?sslmode=disable",
+	)
+	if err != nil {
+		return WorkerConfig{}, err
+	}
+	workerConcurrency, err := strconv.Atoi(value(lookup, "WERK_WORKER_CONCURRENCY", "4"))
+	if err != nil || workerConcurrency < 1 || workerConcurrency > 128 {
+		return WorkerConfig{}, fmt.Errorf("WERK_WORKER_CONCURRENCY must be between 1 and 128")
+	}
+	kafka, err := loadKafkaConfig(lookup, environment)
+	if err != nil {
+		return WorkerConfig{}, err
+	}
+	return WorkerConfig{
+		Environment:       environment,
+		DatabaseURL:       databaseURL,
+		WorkerConcurrency: workerConcurrency,
+		BuildVersion:      value(lookup, "WERK_BUILD_VERSION", "dev"),
+		Kafka:             kafka,
+	}, nil
+}
+
+func loadMigration(lookup lookupEnvironment) (MigrationConfig, error) {
+	environment, err := loadEnvironment(lookup)
+	if err != nil {
+		return MigrationConfig{}, err
+	}
+	databaseURL, err := loadCommandDatabaseURL(
+		lookup, environment, "MIGRATOR_DATABASE_URL",
+		"postgres://werk_migrator:werk-migrator-dev@localhost:5432/werk?sslmode=disable",
+	)
+	if err != nil {
+		return MigrationConfig{}, err
+	}
+	return MigrationConfig{
+		Environment:  environment,
+		DatabaseURL:  databaseURL,
+		BuildVersion: value(lookup, "WERK_BUILD_VERSION", "dev"),
+	}, nil
+}
+
+func loadEnvironment(lookup lookupEnvironment) (string, error) {
+	environment := value(lookup, "WERK_ENV", "development")
+	if environment != "development" && environment != "test" && environment != "production" {
+		return "", fmt.Errorf("WERK_ENV must be development, test, or production")
+	}
+	return environment, nil
+}
+
+func loadCommandDatabaseURL(lookup lookupEnvironment, environment, key, fallback string) (string, error) {
+	databaseURL, configured := aliasedEnvironment(lookup, key, "DATABASE_URL")
+	databaseURL = strings.TrimSpace(databaseURL)
+	if databaseURL == "" {
+		if environment == "production" {
+			return "", fmt.Errorf("%s is required in production", key)
+		}
+		databaseURL = fallback
+		configured = false
+	}
+	if err := validateDatabaseURL(databaseURL); err != nil {
+		return "", err
+	}
+	if environment == "production" {
+		if err := validateProductionDatabaseCredentials(databaseURL); err != nil {
+			return "", err
+		}
+		if !configured {
+			return "", fmt.Errorf("%s is required in production", key)
+		}
+	}
+	return databaseURL, nil
+}
+
+func aliasedEnvironment(lookup lookupEnvironment, primary, legacy string) (string, bool) {
+	if configured, exists := lookup(primary); exists && strings.TrimSpace(configured) != "" {
+		return configured, true
+	}
+	return lookup(legacy)
 }
 
 func loadAPI(lookup lookupEnvironment) (Config, error) {
@@ -350,6 +609,13 @@ func loadKafkaConfig(lookup lookupEnvironment, environment string) (KafkaConfig,
 	for _, topic := range topics {
 		if !validKafkaName(topic.value, 249) {
 			return KafkaConfig{}, fmt.Errorf("%s contains an invalid topic name", topic.name)
+		}
+	}
+	for first := 0; first < len(topics); first++ {
+		for second := first + 1; second < len(topics); second++ {
+			if topics[first].value == topics[second].value {
+				return KafkaConfig{}, fmt.Errorf("%s and %s must use distinct topics", topics[first].name, topics[second].name)
+			}
 		}
 	}
 

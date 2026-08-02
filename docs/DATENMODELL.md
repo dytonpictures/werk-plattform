@@ -174,7 +174,22 @@ erDiagram
 - `Membership` beschreibt die organisatorische Zugehörigkeit einer Partei. Ein
   HR-Beschäftigungsverhältnis bleibt trotzdem Fachdaten des HRM.
 
+Im aktuellen Single-Company-Startprofil bezeichnet die Produktoberfläche den
+für das Unternehmen bestätigten Tenant als **Unternehmen**. Im regulären
+Profilbestand ist genau ein aktiver Tenant vorgesehen; eine zusätzliche harte
+serverseitige Mengenbegrenzung ist noch nicht entschieden. `Tenant` und
+`tenant_id` bleiben die technischen Begriffe in Datenmodell, API, RLS und
+Audit. Eine Organisationseinheit ist eine innere Struktur dieses Unternehmens
+und keine zweite Daten- oder Sicherheitswelt.
+
 Organisationseinheiten bilden die stabilen „Zwiebelschalen“ des Unternehmens.
+Ihre Hierarchie besitzt in Resolver und aktuellem administrativem Go-Writer eine
+gemeinsame Maximaltiefe von 64 Einheiten einschließlich Wurzel und direkter
+Einheit. Damit kann ein über diesen Vertrag gültiger Create-, Reparenting- oder
+Reaktivierungsvorgang den späteren Koordinatenresolver nicht durch einen
+tieferen Pfad aussperren. Direkte Owner-/Migrationswrites werden noch nicht von
+einer eigenen PostgreSQL-Tiefeninvariante begrenzt und müssen diese Grenze
+explizit bewahren.
 Querliegende Zugriffszusammenhänge werden nicht als zweite Hierarchie
 modelliert, sondern als tenantgebundene `AccessGroup`-Kanten. Eine Gruppe kann
 Work-Konten oder Organisationseinheiten enthalten; eine Einheit kann ihre
@@ -199,10 +214,12 @@ beschreibt
 
 ### 3.2 Parteien, Identitäten und Zugriff
 
-**Core Identity** ist die interne Identitäts- und Zugriffsschicht von WERK. Sie
-kann selbst als Identity Provider arbeiten. Externe Provider wie OIDC, SAML oder
-LDAP werden später ausschließlich über Adapter angebunden: Sie bestätigen eine
-Identität, erhalten aber keine Hoheit über Kontoart, Tenant-Zuordnung,
+**Core Identity** ist die interne Identity Authority und Zugriffsschicht von
+WERK. Sie stellt lokale Anmeldung und WERK-Sessions bereit, ist damit aber noch
+kein standardkonformer OIDC- oder SAML-Issuer. Externe Identitätsanbieter werden
+über OIDC- oder SAML-Adapter angebunden; LDAP bleibt ein getrennter
+Verzeichniszugriff und ist nicht automatisch ein Anmeldeprovider. Ein
+Anmeldeadapter bestätigt eine Identität, erhält aber keine Hoheit über Kontoart, Tenant-Zuordnung,
 Session-Audience, Berechtigungen oder Audit. Dadurch bleibt die Trennung von
 `work`, `admin`, `service` und tenantgebundene `agent`-Principals unabhängig vom
 gewählten Anmeldeverfahren.
@@ -213,6 +230,11 @@ festgelegt. Die spätere Active/Passive-Autorität mit Platform Witness, Lease,
 Autoritätsgeneration und Fencing beschreiben
 [`ADR-015`](adr/ADR-015-identity-authority-witness-und-failover.md) und
 [`ADR-022`](adr/ADR-022-deploymentprofile-und-platform-witness.md).
+Die Assurance-Grenze für Administrationssitzungen und die Trennung von
+freiwilliger MFA-Verstärkung und künftiger aktionsgebundener
+Re-Authentifizierung legt
+[`ADR-032`](adr/ADR-032-optionale-admin-mfa-und-aktionsgebundene-reauthentifizierung.md)
+fest.
 
 Eine reale Person, eine Organisation, ein Arbeitskonto und ein
 Administrationssubjekt sind verschiedene Objekte. Dadurch kann dieselbe Person
@@ -1022,10 +1044,19 @@ fachlich führende Quelle ist.
 
 ### 8.6 Mandanten, Gesellschaften, Installationen und Instanzen
 
-Die kleinste sichere Einheit ist eine einzelne WERK-Installation pro Unternehmen.
-Innerhalb einer Installation können mehrere Gesellschaften, Standorte und Teams
-abgebildet werden. Die Architektur bleibt dennoch mandantenfähig, damit getrennte
-Test-, Schulungs- oder Betreiberwelten möglich sind.
+Das aktuelle Self-Hosted-Produktprofil verwendet eine einzelne
+WERK-Installation mit genau einem operativen Tenant pro Unternehmen. Innerhalb
+dieses gemeinsamen Daten- und Sicherheitsraums können Gesellschaftseinheiten,
+Standorte, Bereiche, Abteilungen und Teams als Organisationseinheiten
+abgebildet werden. Die Produktoberfläche nennt den Tenant „Unternehmen“; der
+Core bleibt technisch mandantenfähig.
+
+Getrennte Test-, Schulungs- oder Betreiberwelten sind in diesem Startprofil
+keine zusätzlichen Tenants derselben Installation. Sie werden als getrennte
+Installationen mit eigener Identity-, Daten- und Sicherheitsgrenze betrieben.
+Ein späteres Self-Hosted-Profil mit mehreren isolierten Tenants ist eine
+optionale Erweiterung und benötigt vor seiner Aktivierung eine eigene
+Architektur-, Sicherheits- und Migrationsentscheidung gemäß ADR-001.
 
 ```text
 Installation
@@ -1039,12 +1070,12 @@ Installation
 Eine zweite Instanz für Hochverfügbarkeit bleibt Teil derselben Installation
 und desselben Identity-Realms. Sie erzeugt keine neuen Tenant-IDs und darf nicht
 parallel eine zweite schreibende Identity-Wahrheit aufbauen. Eine getrennte
-Test- oder Schulungsinstallation besitzt dagegen eine eigene Identity-Autorität;
+Test- oder Schulungsinstallation besitzt eine eigene Identity-Autorität;
 ihre Daten gelangen ausschließlich über kontrollierten Export und Import in
 eine andere Installation.
 
 Bei Wachstum wird nicht zuerst die Facharchitektur geteilt, sondern der Betrieb:
-replizierbare Container, getrennte Worker, objektbasierter Dateispeicher,
+replizierbare native Prozesse, getrennte Worker, objektbasierter Dateispeicher,
 Datenbank-Backups und lesende Reporting-Projektionen.
 
 ### 8.7 Betrieb als Produktfunktion
@@ -1249,8 +1280,13 @@ Diese Regel ist für alle künftigen Module verbindlich:
    oder Fachrollen.
 5. Ein Arbeitskonto erhält keine Plattform-, Installations- oder globalen
    Sicherheitsrechte.
-6. Jede Admin-Sitzung verlangt MFA und wird ausführlich auditiert; besonders
-   sensible Aktionen verlangen zusätzlich eine erneute Anmeldung.
+6. Eine Admin-Sitzung darf die Admin-Zugriffsebene nur als interaktive
+   `admin`-Session mit `admin`-Audience, ohne Tenant-Kontext und mit bekannter
+   `single-factor`- oder `multi-factor`-Assurance betreten; `unknown` wird
+   geschlossen abgelehnt. MFA bleibt eine selbst gestartete Empfehlung.
+   Besonders sensible künftige Aktionen dürfen einen eigenen, aktions- und
+   ressourcengebundenen Re-Authentifizierungsvertrag verlangen. Session-
+   Ausstellung und sicherheitsrelevante Admin-Aktionen bleiben auditiert.
 7. Notfallzugang („break glass") ist ein eigener, zeitlich begrenzter
    Administrationsmechanismus mit zusätzlicher Protokollierung – niemals eine
    versteckte Berechtigung auf einem Arbeitskonto.

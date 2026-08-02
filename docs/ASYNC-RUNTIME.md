@@ -75,12 +75,27 @@ verlusttolerant nach `platform.runtime-logs.v1` gespiegelt. Diese drei Pfade
 dürfen weder Topic noch Retention oder ACLs teilen. Details stehen in
 [`ADR-020`](adr/ADR-020-kafka-event-audit-und-log-streaming.md).
 
+Die Topics werden betreiberseitig angelegt. Metadatenabfragen des Workers und
+von `werkctl doctor` erlauben keine automatische Topic-Erzeugung und prüfen vor
+der Verarbeitung, dass alle drei Topics samt Partitionen erreichbar sind.
+Retention, Replikation und ACL-Inhalte bleiben Betreiberkonfiguration und
+werden nicht durch zusätzliche Kafka-Adminrechte des Runtime-Principals
+ausgelesen oder verändert.
+
 ## Fehlerverhalten
 
 Leases laufen nach einem Prozessabsturz ab. Retries verwenden exponentielles
 Backoff bis maximal fünf Minuten. Nach `max_attempts` bleibt das Ereignis als
 Dead Letter in PostgreSQL erhalten. Fehlertexte sind begrenzt und dürfen keine
 Secrets enthalten.
+
+Der Runtime-Log-Puffer blockiert keine Fachtransaktion. Beim geordneten
+Shutdown nimmt er keine neuen Einträge mehr an und leert bereits akzeptierte
+Einträge bis zur vorgegebenen Frist. Kodierungs-, Puffer-, Publish- und
+Shutdownverluste erhöhen `werk_kafka_runtime_logs_dropped_total`. Lokales
+`stdout` behält Diagnosefehler; in der externen Kafka-Spiegelung werden
+konventionelle `error`-Attribute sowie Credential-, Token-, Cookie-, Session-
+und Secretfelder geschwärzt.
 
 ## Skalierung
 

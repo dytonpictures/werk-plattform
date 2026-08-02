@@ -3,6 +3,7 @@ const statusDot = document.querySelector('[data-status-dot]');
 const loginForm = document.querySelector('[data-login-form]');
 const loginNotice = document.querySelector('[data-login-notice]');
 const submitButton = loginForm?.querySelector('button[type="submit"]');
+const passkeyButton = document.querySelector('[data-passkey-login]');
 const logoutButton = document.querySelector('[data-logout]');
 
 function csrfToken() {
@@ -36,14 +37,13 @@ function showNotice(message, kind = '') {
 
 function destinationForSession(session) {
   if (session?.must_change_password === true) return '/change-password';
-  if (session?.mfa_enrollment_required === true) return '/mfa-setup';
-  if (session?.account_class === 'admin' && session?.audience === 'werk-admin') return '/admin';
-  if (session?.account_class === 'work' && session?.audience === 'werk-work') return '/app';
+  if (session?.account_class === 'admin' && session?.audience === 'admin') return '/admin';
+  if (session?.account_class === 'work' && session?.audience === 'work') return '/app';
   return null;
 }
 
 function allowedRedirect(value) {
-  return ['/change-password', '/mfa', '/mfa-setup', '/admin', '/app'].includes(value) ? value : null;
+  return ['/change-password', '/mfa', '/admin', '/app'].includes(value) ? value : null;
 }
 
 async function checkSession() {
@@ -83,6 +83,40 @@ loginForm.addEventListener('submit', async (event) => {
   } catch (error) {
     showNotice(error.message || 'Anmeldung fehlgeschlagen.', 'error');
   } finally {
+    submitButton.disabled = false;
+  }
+});
+
+passkeyButton?.addEventListener('click', async () => {
+  passkeyButton.disabled = true;
+  submitButton.disabled = true;
+  showNotice('Passkey wird angefordert …');
+  try {
+    const optionsResponse = await fetch('/api/v1/auth/passkeys/authentication/options', {
+      method: 'POST', credentials: 'same-origin',
+      headers: { accept: 'application/json', 'content-type': 'application/json' },
+      body: '{}',
+    });
+    const options = await optionsResponse.json().catch(() => ({}));
+    if (!optionsResponse.ok) throw new Error(options.detail || 'Die Passkey-Anmeldung konnte nicht gestartet werden.');
+    const credential = await window.WebAuthnClient.get(options);
+    const verificationResponse = await fetch('/api/v1/auth/passkeys/authentication/verification', {
+      method: 'POST', credentials: 'same-origin',
+      headers: { accept: 'application/json', 'content-type': 'application/json', 'X-CSRF-Token': csrfToken() },
+      body: JSON.stringify(credential),
+    });
+    const payload = await verificationResponse.json().catch(() => ({}));
+    if (!verificationResponse.ok) throw new Error(payload.detail || 'Der Passkey wurde abgelehnt.');
+    const destination = allowedRedirect(payload.redirect);
+    if (!destination) throw new Error('Die Anmeldung lieferte kein gültiges Ziel.');
+    showNotice('Passkey bestätigt. WERK wird geöffnet …', 'success');
+    window.location.assign(destination);
+  } catch (error) {
+    const message = error?.name === 'NotAllowedError'
+      ? 'Die Passkey-Anmeldung wurde abgebrochen oder ist abgelaufen.'
+      : (error.message || 'Die Passkey-Anmeldung ist fehlgeschlagen.');
+    showNotice(message, 'error');
+    passkeyButton.disabled = false;
     submitButton.disabled = false;
   }
 });

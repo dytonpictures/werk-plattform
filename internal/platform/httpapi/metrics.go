@@ -11,14 +11,18 @@ import (
 )
 
 type httpMetrics struct {
-	buildVersion string
-	startedAt    time.Time
-	requests     atomic.Uint64
-	responses    [6]atomic.Uint64
+	buildVersion      string
+	startedAt         time.Time
+	runtimeLogDropped func() uint64
+	requests          atomic.Uint64
+	responses         [6]atomic.Uint64
 }
 
-func newHTTPMetrics(buildVersion string) *httpMetrics {
-	return &httpMetrics{buildVersion: buildVersion, startedAt: time.Now()}
+func newHTTPMetrics(buildVersion string, runtimeLogDropped func() uint64) *httpMetrics {
+	return &httpMetrics{
+		buildVersion: buildVersion, startedAt: time.Now(),
+		runtimeLogDropped: runtimeLogDropped,
+	}
 }
 
 func (metrics *httpMetrics) middleware(next http.Handler) http.Handler {
@@ -54,6 +58,13 @@ func (metrics *httpMetrics) serveHTTP(writer http.ResponseWriter, _ *http.Reques
 	for statusClass := 1; statusClass <= 5; statusClass++ {
 		_, _ = fmt.Fprintf(writer, "werk_http_responses_total{status_class=\"%dxx\"} %d\n", statusClass, metrics.responses[statusClass].Load())
 	}
+	dropped := uint64(0)
+	if metrics.runtimeLogDropped != nil {
+		dropped = metrics.runtimeLogDropped()
+	}
+	_, _ = fmt.Fprintf(writer, "# HELP werk_kafka_runtime_logs_dropped_total Runtime log records not exported to Kafka.\n")
+	_, _ = fmt.Fprintf(writer, "# TYPE werk_kafka_runtime_logs_dropped_total counter\n")
+	_, _ = fmt.Fprintf(writer, "werk_kafka_runtime_logs_dropped_total %d\n", dropped)
 }
 
 func prometheusLabel(value string) string {

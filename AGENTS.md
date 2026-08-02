@@ -63,17 +63,17 @@ Das Repository enthält das Plattformfundament. Prüfungen für Go-Änderungen:
 ```bash
 gofmt -w cmd internal
 go test ./...
-docker compose config --quiet
+go vet ./...
 ```
 
 Änderungen an Rollen, Migrationen, RLS oder tenantgebundenem Datenzugriff müssen
-zusätzlich `make integration-test` bestehen. Dieser Test verwendet ein eigenes
-Docker-Projekt und löscht ausschließlich dessen Wegwerf-Volume.
+zusätzlich gegen ausdrücklich konfigurierte, wegwerfbare PostgreSQL- und
+gegebenenfalls Kafka-Instanzen geprüft werden.
 
-Der vollständige Container-Stack startet mit `docker compose up --build -d`.
-Für native Entwicklung startet `make dev` nur PostgreSQL und Valkey im isolierten
-Compose-Projekt; Dashboard, API, Worker und Migration laufen als Host-Prozesse.
-Einzelne Prozesse lassen sich über `make dev-api`, `make dev-worker` und
-`make dev-dashboard` in getrennten Terminals starten. Datenbankmigrationen liegen
-als eingebettete SQL-Dateien unter `internal/platform/migrate/migrations`;
-angewendete Migrationen werden nie nachträglich verändert.
+Lokale Konfiguration und Secrets liegen in der ignorierten `.env`; getrennte
+Datenbank-URLs erhalten die Konto- und Prozessgrenzen. Der native
+Debian-/Ubuntu-Start erfolgt mit `sh scripts/start.sh`. Dashboard und API
+laufen aus demselben Go-Prozess, der Worker bleibt ein getrennter Prozess.
+Datenbankmigrationen liegen als eingebettete SQL-Dateien unter
+`internal/platform/migrate/migrations`; angewendete Migrationen werden nie
+nachträglich verändert.

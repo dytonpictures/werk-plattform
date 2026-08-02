@@ -27,9 +27,13 @@ Auflösung nicht wiederverwendet werden.
   Werte werden ausschließlich aus dem verifizierten Konto gelesen.
 - Nach der Anmeldung wird jede Session an genau eine serverseitig bestimmte
   Audience gebunden. Bereichsmiddleware prüft Kontoart und Audience erneut.
-- Interaktive Admin-Sessions benötigen weiterhin MFA. Ein Bootstrap-Admin darf
-  vor eingerichteter MFA ausschließlich den eng begrenzten Bootstrap- und
-  Passwortwechselablauf verwenden, nicht die reguläre Admin-API.
+- Interaktive Admin-Sessions benötigen die Kontoart `admin`, die Admin-Audience,
+  keinen Tenant und eine bekannte Assurance `single-factor` oder
+  `multi-factor`; `unknown` wird fail-closed abgewiesen. MFA ist eine
+  selbst gestartete, nicht blockierende Empfehlung. Diese durch
+  [`ADR-032`](ADR-032-optionale-admin-mfa-und-aktionsgebundene-reauthentifizierung.md)
+  konkretisierte Regel ersetzt die frühere globale MFA-Bedingung; die
+  Runtime-, Audience- und API-Grenzen dieses ADR bleiben unverändert.
 - Credential- und Sessiongeheimnisse werden nur gehasht gespeichert. Antworten
   und Logs verraten weder Kontovorhandensein noch Kontoart.
 

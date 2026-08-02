@@ -30,6 +30,7 @@ const listenAddress = parseListenAddress(
 const apiTarget = parseAPITarget(process.env.WERK_API_URL);
 const pageRoutes = new Map([
   ['/', 'index.html'],
+  ['/activate', 'activate.html'],
   ['/change-password', 'change-password.html'],
   ['/mfa', 'mfa.html'],
   ['/mfa-setup', 'mfa-setup.html'],
@@ -85,11 +86,10 @@ function log(level, message, fields = {}) {
 }
 
 function isAPIPath(pathname) {
-  return (
-    pathname === '/meta' ||
-    ['/api', '/admin', '/service', '/health'].some(
-      (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`),
-    )
+  if (pathname === '/meta') return true;
+  if (pathname.startsWith('/admin/')) return true;
+  return ['/api', '/service', '/health'].some(
+    (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`),
   );
 }
 

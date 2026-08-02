@@ -30,8 +30,14 @@ func browserMutationProtectionMiddleware(allowedOrigins []string) func(http.Hand
 				}
 			}
 
-			hasCookieCredential := request.URL.Path != "/api/v1/auth/login" &&
-				(cookieValue(request, "werk_session") != "" || cookieValue(request, "werk_mfa_challenge") != "")
+			// These public ceremonies authorize with request-body secrets and do
+			// not consume ambient cookies. An unrelated existing session must not
+			// turn them into cookie-authenticated mutations.
+			publicCredentialCeremony := request.URL.Path == "/api/v1/auth/login" ||
+				request.URL.Path == "/api/v1/auth/invitations/initial/accept" ||
+				request.URL.Path == "/api/v1/auth/passkeys/authentication/options"
+			hasCookieCredential := !publicCredentialCeremony &&
+				(cookieValue(request, "werk_session") != "" || cookieValue(request, "werk_mfa_challenge") != "" || cookieValue(request, "webauthn_ceremony") != "")
 			if hasCookieCredential {
 				// Cookie-authenticated browser mutations require both an explicit
 				// allowed Origin and a double-submit token. SameSite remains an

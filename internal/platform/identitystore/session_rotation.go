@@ -11,8 +11,9 @@ import (
 )
 
 const (
-	sessionRotationPasswordChange = "password-change"
-	sessionRotationMFAEnrollment  = "mfa-enrollment"
+	sessionRotationPasswordChange    = "password-change"
+	sessionRotationMFAEnrollment     = "mfa-enrollment"
+	sessionRotationPasskeyRevocation = "passkey-revocation"
 )
 
 type pendingSessionRotation struct {
@@ -41,7 +42,10 @@ func (service *Service) prepareSessionRotation() (pendingSessionRotation, error)
 		return pendingSessionRotation{}, err
 	}
 	createdAt := service.now()
-	result := identity.SessionRotation{SessionToken: token, ExpiresAt: createdAt.Add(sessionTTL)}
+	// The exact audience is locked later. Start with the longest allowed
+	// interactive lifetime and cap it to both source expiry and audience policy
+	// inside rotateAccountSessions.
+	result := identity.SessionRotation{SessionToken: token, ExpiresAt: createdAt.Add(service.workSessionTTL)}
 	if err := result.Validate(createdAt); err != nil {
 		return pendingSessionRotation{}, err
 	}
@@ -77,8 +81,11 @@ func (service *Service) rotateAccountSessions(
 	if subject.kind != identity.AuthenticationInteractive {
 		return identity.ErrAccessDenied
 	}
-	if reason != sessionRotationPasswordChange && reason != sessionRotationMFAEnrollment {
+	if reason != sessionRotationPasswordChange && reason != sessionRotationMFAEnrollment && reason != sessionRotationPasskeyRevocation {
 		return errors.New("unsupported session rotation reason")
+	}
+	if err := rotation.limitExpiresAt(rotation.createdAt.Add(service.sessionLifetime(subject.audience))); err != nil {
+		return identity.ErrSessionInvalid
 	}
 	var sessionGeneration int64
 	if err := tx.QueryRow(ctx, `

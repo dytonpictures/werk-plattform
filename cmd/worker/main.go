@@ -10,20 +10,37 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/dytonpictures/werk/internal/core/operations"
 	"github.com/dytonpictures/werk/internal/platform/auditexport"
 	"github.com/dytonpictures/werk/internal/platform/config"
 	"github.com/dytonpictures/werk/internal/platform/database"
+	"github.com/dytonpictures/werk/internal/platform/envfile"
 	"github.com/dytonpictures/werk/internal/platform/kafkastream"
+	"github.com/dytonpictures/werk/internal/platform/operationsstore"
 	"github.com/dytonpictures/werk/internal/platform/outbox"
 )
 
+const (
+	workerHeartbeatInterval       = 10 * time.Second
+	workerHeartbeatExpiry         = 30 * time.Second
+	workerHeartbeatAttemptTimeout = 5 * time.Second
+)
+
+type heartbeatUpdater interface {
+	Beat(context.Context, operations.State) error
+}
+
 func main() {
-	cfg, err := config.Load()
+	if err := envfile.LoadProcess(); err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "invalid .env file: %v\n", err)
+		os.Exit(1)
+	}
+	cfg, err := config.LoadWorker()
 	if err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "invalid configuration: %v\n", err)
 		os.Exit(1)
 	}
-	logger := config.NewLogger(cfg, "worker")
+	logger := config.NewComponentLogger(cfg.Environment, cfg.BuildVersion, "worker")
 	hostname, _ := os.Hostname()
 	workerID := hostname + "-" + strconv.Itoa(os.Getpid())
 	workerDatabase, err := database.NewWorker(context.Background(), cfg.DatabaseURL, "werk-worker")
@@ -53,6 +70,18 @@ func main() {
 		cancel()
 		if err != nil {
 			logger.Error("Kafka is unavailable", "error", err)
+			kafkaClient.Close()
+			os.Exit(1)
+		}
+		checkContext, cancel = context.WithTimeout(context.Background(), cfg.Kafka.PublishTimeout)
+		err = kafkaClient.VerifyTopics(checkContext,
+			cfg.Kafka.DomainEventsTopic,
+			cfg.Kafka.SecurityAuditTopic,
+			cfg.Kafka.RuntimeLogsTopic,
+		)
+		cancel()
+		if err != nil {
+			logger.Error("Kafka topic contract is unavailable", "error", err)
 			kafkaClient.Close()
 			os.Exit(1)
 		}
@@ -96,9 +125,50 @@ func main() {
 			os.Exit(1)
 		}
 	}
+	heartbeatWriter, err := operationsstore.NewWorkerHeartbeatWriter(workerDatabase, cfg.BuildVersion, workerHeartbeatExpiry)
+	if err != nil {
+		logger.Error("worker heartbeat could not be configured", "error", err)
+		os.Exit(1)
+	}
+	initialHeartbeatContext, cancelInitialHeartbeat := context.WithTimeout(context.Background(), workerHeartbeatAttemptTimeout)
+	initialKafkaState := operations.StateDisabled
+	if cfg.Kafka.Enabled {
+		initialKafkaState = operations.StateReady
+	}
+	err = heartbeatWriter.Beat(initialHeartbeatContext, initialKafkaState)
+	cancelInitialHeartbeat()
+	if err != nil {
+		logger.Error("initial worker heartbeat failed", "error", err)
+		os.Exit(1)
+	}
 
 	signalContext, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	var heartbeatRuntime sync.WaitGroup
+	heartbeatRuntime.Add(1)
+	go func() {
+		defer heartbeatRuntime.Done()
+		ticker := time.NewTicker(workerHeartbeatInterval)
+		defer ticker.Stop()
+		runWorkerHeartbeat(signalContext, heartbeatWriter, ticker.C, workerHeartbeatAttemptTimeout, func(ctx context.Context) (operations.State, error) {
+			if !cfg.Kafka.Enabled {
+				return operations.StateDisabled, nil
+			}
+			if err := kafkaClient.Ping(ctx); err != nil {
+				return operations.StateDegraded, err
+			}
+			if err := kafkaClient.VerifyTopics(ctx,
+				cfg.Kafka.DomainEventsTopic,
+				cfg.Kafka.SecurityAuditTopic,
+				cfg.Kafka.RuntimeLogsTopic,
+			); err != nil {
+				return operations.StateDegraded, err
+			}
+			return operations.StateReady, nil
+		}, func(err error) {
+			logger.WarnContext(signalContext, "worker heartbeat update failed", "error", err)
+		})
+	}()
 	logger.Info("worker started", "concurrency", cfg.WorkerConcurrency, "kafka_enabled", cfg.Kafka.Enabled)
 	if cfg.Kafka.Enabled {
 		var runtimes sync.WaitGroup
@@ -116,6 +186,12 @@ func main() {
 		logger.Warn("Kafka is disabled; durable events and audit exports remain queued")
 		<-signalContext.Done()
 	}
+	heartbeatRuntime.Wait()
+	removeHeartbeatContext, cancelRemoveHeartbeat := context.WithTimeout(context.Background(), workerHeartbeatAttemptTimeout)
+	if err := heartbeatWriter.Remove(removeHeartbeatContext); err != nil {
+		logger.Warn("worker heartbeat could not be withdrawn", "error", err)
+	}
+	cancelRemoveHeartbeat()
 	logger.Info("worker stopped")
 	if logSink != nil {
 		closeContext, cancel := context.WithTimeout(context.Background(), cfg.Kafka.PublishTimeout+time.Second)
@@ -127,5 +203,41 @@ func main() {
 	}
 	if kafkaClient != nil {
 		kafkaClient.Close()
+	}
+}
+
+// runWorkerHeartbeat deliberately performs no initial update. The caller must
+// complete that update synchronously before announcing the worker as started.
+// Later failures are reported and retried on the next tick until shutdown.
+func runWorkerHeartbeat(
+	ctx context.Context,
+	writer heartbeatUpdater,
+	ticks <-chan time.Time,
+	attemptTimeout time.Duration,
+	observeKafka func(context.Context) (operations.State, error),
+	reportFailure func(error),
+) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticks:
+			kafkaState := operations.StateUnknown
+			var observationErr error
+			if observeKafka != nil {
+				observationContext, cancelObservation := context.WithTimeout(ctx, attemptTimeout)
+				kafkaState, observationErr = observeKafka(observationContext)
+				cancelObservation()
+			}
+			if observationErr != nil && ctx.Err() == nil && reportFailure != nil {
+				reportFailure(fmt.Errorf("Kafka observation failed: %w", observationErr))
+			}
+			heartbeatContext, cancelHeartbeat := context.WithTimeout(ctx, attemptTimeout)
+			err := writer.Beat(heartbeatContext, kafkaState)
+			cancelHeartbeat()
+			if err != nil && ctx.Err() == nil && reportFailure != nil {
+				reportFailure(err)
+			}
+		}
 	}
 }

@@ -1,0 +1,4 @@
+interface:
+  display_name: "CodeGuard"
+  short_description: "Enterprise-grade anti-slop quality gate"
+  default_prompt: "Use $codeguard to verify that this change is robust, maintainable, and production-ready without unnecessary complexity."

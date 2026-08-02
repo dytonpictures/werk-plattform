@@ -94,12 +94,18 @@ func (service *Service) CreateTenant(ctx context.Context, input CreateTenantInpu
 		return TenantView{}, err
 	}
 	view := TenantView{ID: tenant.ID.String(), Name: tenant.Name, Status: string(tenant.Status), DefaultLocale: tenant.DefaultLocale, DefaultTimezone: tenant.DefaultTimezone, Version: tenant.Version}
+	changedAt := tenant.UpdatedAt.UTC()
 	err = service.database.WithinTenantWrite(ctx, tenant.ID, func(ctx context.Context, tx database.TenantTx) error {
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO werk_core.tenants (
 				id, name, status, default_locale, default_timezone, created_at, updated_at, version
 			) VALUES ($1::uuid, $2, $3, $4, $5, $6, $6, 1)
-		`, view.ID, view.Name, view.Status, view.DefaultLocale, view.DefaultTimezone, service.now()); err != nil {
+		`, view.ID, view.Name, view.Status, view.DefaultLocale, view.DefaultTimezone, changedAt); err != nil {
+			return err
+		}
+		if err := service.businessObjects.PublishWorkspace(
+			ctx, tx, tenant.ID, view.Name, view.Version, changedAt,
+		); err != nil {
 			return err
 		}
 		if _, err := tx.Exec(ctx, `
@@ -121,7 +127,7 @@ func (service *Service) CreateTenant(ctx context.Context, input CreateTenantInpu
 				'core.tenancy.tenant', $2::uuid, $2, $3, $4::uuid,
 				jsonb_build_object('tenant_id', $2::text, 'name', $5::text)
 			)
-		`, eventID, view.ID, service.now(), correlationID, view.Name)
+		`, eventID, view.ID, changedAt, correlationID, view.Name)
 		return err
 	})
 	if err != nil {
@@ -161,6 +167,7 @@ func (service *Service) UpdateTenant(ctx context.Context, tenantIDValue string, 
 		DefaultLocale:   candidate.DefaultLocale,
 		DefaultTimezone: candidate.DefaultTimezone,
 	}
+	changedAt := service.now()
 	err = service.database.WithinTenantWrite(ctx, tenantID, func(ctx context.Context, tx database.TenantTx) error {
 		var previous TenantView
 		if err := tx.QueryRow(ctx, `
@@ -180,8 +187,22 @@ func (service *Service) UpdateTenant(ctx context.Context, tenantIDValue string, 
 			    updated_at=$6, version=version+1
 			WHERE id=$1::uuid AND version=$7
 			RETURNING version
-		`, tenantID.String(), view.Name, view.Status, view.DefaultLocale, view.DefaultTimezone, service.now(), expectedVersion).Scan(&view.Version); err != nil {
+		`, tenantID.String(), view.Name, view.Status, view.DefaultLocale, view.DefaultTimezone, changedAt, expectedVersion).Scan(&view.Version); err != nil {
 			return ErrVersionConflict
+		}
+		switch candidate.Status {
+		case tenancy.TenantStatusActive:
+			if err := service.businessObjects.PublishWorkspace(
+				ctx, tx, tenantID, view.Name, view.Version, changedAt,
+			); err != nil {
+				return err
+			}
+		case tenancy.TenantStatusSuspended, tenancy.TenantStatusArchived:
+			if err := service.businessObjects.WithdrawWorkspace(
+				ctx, tx, tenantID, view.Version, changedAt,
+			); err != nil {
+				return err
+			}
 		}
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO werk_core.security_audit_events (
@@ -207,7 +228,7 @@ func (service *Service) UpdateTenant(ctx context.Context, tenantIDValue string, 
 				'core.tenancy.tenant',$2::uuid,$2,$3,$4::uuid,
 				jsonb_build_object('tenant_id',$2::text,'name',$5::text,'status',$6::text,'version',$7::bigint)
 			)
-		`, eventID, tenantID.String(), service.now(), correlationID, view.Name, view.Status, view.Version)
+		`, eventID, tenantID.String(), changedAt, correlationID, view.Name, view.Status, view.Version)
 		return err
 	})
 	if err != nil {
@@ -282,16 +303,40 @@ func (service *Service) CreateOrganizationalUnit(ctx context.Context, tenantIDVa
 	}
 	err = service.database.WithinTenantWrite(ctx, tenantID, func(ctx context.Context, tx database.TenantTx) error {
 		var tenantActive bool
-		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM werk_core.tenants WHERE id=$1::uuid AND status='active')`, tenantID.String()).Scan(&tenantActive); err != nil || !tenantActive {
+		// Every organizational-unit create, including a root unit, serializes on
+		// the tenant before checking lifecycle state. A concurrent suspension can
+		// therefore commit either before this check or after the complete create,
+		// but never in the gap between validation and insert.
+		if err := tx.QueryRow(ctx, `
+			SELECT status='active'
+			FROM werk_core.tenants
+			WHERE id=$1::uuid
+			FOR UPDATE
+		`, tenantID.String()).Scan(&tenantActive); err != nil || !tenantActive {
 			return errors.New("tenant unavailable")
 		}
 		var parent any
 		if view.ParentID != nil {
+			parent = *view.ParentID
+			if err := lockOrganizationalUnitMutationPaths(
+				ctx, tx, tenantID.String(), view.ID, parent,
+			); err != nil {
+				return err
+			}
 			var parentActive bool
-			if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM werk_core.organizational_units WHERE id=$1::uuid AND tenant_id=$2::uuid AND status='active')`, *view.ParentID, tenantID.String()).Scan(&parentActive); err != nil || !parentActive {
+			if err := tx.QueryRow(ctx, `
+				SELECT status='active'
+				FROM werk_core.organizational_units
+				WHERE id=$1::uuid AND tenant_id=$2::uuid
+				FOR KEY SHARE
+			`, *view.ParentID, tenantID.String()).Scan(&parentActive); err != nil || !parentActive {
 				return errors.New("parent organizational unit unavailable")
 			}
-			parent = *view.ParentID
+			if err := ensureOrganizationalUnitCreateDepth(
+				ctx, tx, tenantID.String(), *view.ParentID,
+			); err != nil {
+				return err
+			}
 		}
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO werk_core.organizational_units (
@@ -374,6 +419,13 @@ func (service *Service) UpdateOrganizationalUnit(ctx context.Context, tenantIDVa
 		view.ParentID = &value
 	}
 	err = service.database.WithinTenantWrite(ctx, tenantID, func(ctx context.Context, tx database.TenantTx) error {
+		var parent any
+		if view.ParentID != nil {
+			parent = *view.ParentID
+		}
+		if err := lockOrganizationalUnitMutationPaths(ctx, tx, tenantID.String(), unitID.String(), parent); err != nil {
+			return err
+		}
 		var previous OrganizationalUnitView
 		var previousParent string
 		if err := tx.QueryRow(ctx, `
@@ -393,7 +445,6 @@ func (service *Service) UpdateOrganizationalUnit(ctx context.Context, tenantIDVa
 		if previousParent != "" {
 			previous.ParentID = &previousParent
 		}
-		var parent any
 		if view.ParentID != nil {
 			var parentAvailable, createsCycle bool
 			if err := tx.QueryRow(ctx, `
@@ -421,24 +472,52 @@ func (service *Service) UpdateOrganizationalUnit(ctx context.Context, tenantIDVa
 			if createsCycle {
 				return errors.New("organizational unit hierarchy cycle")
 			}
-			parent = *view.ParentID
+		}
+		parentChanged := previousParent != organizationalUnitParentString(view.ParentID)
+		activatingArchivedUnit := previous.Status == string(tenancy.UnitStatusArchived) &&
+			candidate.Status == tenancy.UnitStatusActive
+		if parentChanged || activatingArchivedUnit {
+			if err := ensureOrganizationalUnitReparentDepth(
+				ctx, tx, tenantID.String(), unitID.String(), parent,
+			); err != nil {
+				return err
+			}
+		}
+		if parentChanged {
+			if err := lockOrganizationalUnitInheritedLinks(ctx, tx, tenantID.String(), unitID.String(), parent); err != nil {
+				return err
+			}
+			var inheritedAccessConflict bool
+			if err := tx.QueryRow(
+				ctx,
+				organizationalUnitInheritedAccessConflictSQL,
+				tenantID.String(),
+				unitID.String(),
+				parent,
+				service.now(),
+			).Scan(&inheritedAccessConflict); err != nil {
+				return err
+			}
+			if inheritedAccessConflict {
+				return ErrOrganizationalUnitInheritedAccessConflict
+			}
 		}
 		if candidate.Status == tenancy.UnitStatusArchived {
+			if err := lockOrganizationalUnitDirectLinks(ctx, tx, tenantID.String(), unitID.String()); err != nil {
+				return err
+			}
 			var inUse bool
-			if err := tx.QueryRow(ctx, `
-				SELECT EXISTS(
-					SELECT 1 FROM werk_core.organizational_units
-					WHERE tenant_id=$1::uuid AND parent_id=$2::uuid AND status='active'
-				) OR EXISTS(
-					SELECT 1 FROM werk_core.memberships
-					WHERE tenant_id=$1::uuid AND organizational_unit_id=$2::uuid
-					  AND valid_from <= $3 AND (valid_until IS NULL OR valid_until > $3)
-				)
-			`, tenantID.String(), unitID.String(), service.now()).Scan(&inUse); err != nil {
+			if err := tx.QueryRow(
+				ctx,
+				organizationalUnitArchiveReferenceSQL,
+				tenantID.String(),
+				unitID.String(),
+				service.now(),
+			).Scan(&inUse); err != nil {
 				return err
 			}
 			if inUse {
-				return errors.New("organizational unit is still in use")
+				return ErrOrganizationalUnitReferenced
 			}
 		}
 		if err := tx.QueryRow(ctx, `
@@ -481,4 +560,11 @@ func (service *Service) UpdateOrganizationalUnit(ctx context.Context, tenantIDVa
 		return OrganizationalUnitView{}, err
 	}
 	return view, nil
+}
+
+func organizationalUnitParentString(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
 }

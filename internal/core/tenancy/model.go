@@ -13,6 +13,10 @@ import (
 )
 
 const (
+	// MaximumOrganizationalUnitDepth is the maximum number of units from a
+	// hierarchy root through an organizational unit, both endpoints included.
+	MaximumOrganizationalUnitDepth = 64
+
 	maximumNameLength     = 200
 	maximumUnitTypeLength = 64
 )

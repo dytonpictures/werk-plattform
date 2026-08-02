@@ -1,7 +1,12 @@
 const page = document.querySelector('[data-authenticated-page]');
 const notice = document.querySelector('[data-page-notice]');
-const logout = document.querySelector('[data-page-logout]');
+const logoutButtons = [...document.querySelectorAll('[data-page-logout]')];
 const passwordForm = document.querySelector('[data-password-form]');
+const passkeyForm = document.querySelector('[data-profile-passkey-form]');
+const passkeyList = document.querySelector('[data-passkey-list]');
+const sessionList = document.querySelector('[data-session-list]');
+const passkeyRevokeDialog = document.querySelector('[data-passkey-revoke-dialog]');
+const passkeyRevokeForm = document.querySelector('[data-passkey-revoke-form]');
 
 document.querySelectorAll('.skip-link[href^="#"]').forEach((link) => {
   link.addEventListener('click', (event) => {
@@ -51,10 +56,24 @@ function showPageNotice(message, kind = '') {
 
 function destinationForSession(session) {
   if (session?.must_change_password === true) return '/change-password';
-  if (session?.mfa_enrollment_required === true) return '/mfa-setup';
-  if (session?.account_class === 'admin' && session?.audience === 'werk-admin' && session?.home_path === '/admin') return session.home_path;
-  if (session?.account_class === 'work' && session?.audience === 'werk-work' && session?.home_path === '/app') return session.home_path;
+	if (session?.account_class === 'admin' && session?.audience === 'admin' && session?.home_path === '/mfa-setup') return session.home_path;
+  if (session?.account_class === 'admin' && session?.audience === 'admin' && session?.home_path === '/admin') return session.home_path;
+  if (session?.account_class === 'work' && session?.audience === 'work' && session?.home_path === '/app') return session.home_path;
   return '/';
+}
+
+function renderProfileSecurity(session) {
+  const copy = document.querySelector('[data-profile-security-copy]');
+  const badge = document.querySelector('[data-profile-security-badge]');
+  if (session.account_class === 'work') {
+    if (copy) copy.textContent = 'Ein Passkey schützt Ihr Arbeitskonto vor Phishing und kann freiwillig eingerichtet werden.';
+    if (badge) badge.textContent = 'Empfohlen';
+    return;
+  }
+  if (copy) copy.textContent = session.authentication_assurance === 'multi-factor'
+    ? 'MFA ist für diese Sitzung aktiv. Sie können bei Bedarf einen zusätzlichen Passkey registrieren.'
+    : 'MFA wird für Administrationskonten empfohlen, ist für die Nutzung der Administration aber nicht erforderlich.';
+  if (badge) badge.textContent = session.authentication_assurance === 'multi-factor' ? 'MFA aktiv' : 'MFA empfohlen';
 }
 
 function populateProfile(session) {
@@ -74,7 +93,17 @@ function populateProfile(session) {
     element.textContent = session.account_class === 'admin' ? 'Administrationskonto' : 'Arbeitskonto';
   });
   document.querySelectorAll('[data-profile-tenant]').forEach((element) => {
-    element.textContent = session.tenant_id || 'Nicht mandantengebunden';
+    element.textContent = session.account_class === 'admin'
+      ? 'Gesamte WERK-Installation'
+      : session.tenant_id || 'Keinem Unternehmen zugeordnet';
+  });
+  document.querySelectorAll('[data-profile-tenant-label]').forEach((element) => {
+    element.textContent = session.account_class === 'admin' ? 'Verwaltungsbereich' : 'Zugeordnetes Unternehmen';
+  });
+  document.querySelectorAll('[data-profile-tenant-copy]').forEach((element) => {
+    element.textContent = session.account_class === 'admin'
+      ? 'Administrationskonten sind keinem einzelnen Unternehmen zugeordnet'
+      : 'Gilt für dieses Arbeitskonto';
   });
   document.querySelectorAll('[data-profile-expires]').forEach((element) => {
     element.textContent = session.expires_at
@@ -87,14 +116,80 @@ function populateProfile(session) {
   });
 }
 
-function renderGlobalNavigation(session) {
+function identityDate(value) {
+  return value ? new Intl.DateTimeFormat('de-DE', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value)) : '—';
+}
+
+function lifecycleRow(title, details, actionLabel, action) {
+  const row = document.createElement('div');
+  row.className = 'operations-list-item';
+  const copy = document.createElement('div');
+  const heading = document.createElement('strong');
+  const text = document.createElement('span');
+  heading.textContent = title;
+  text.textContent = details;
+  copy.append(heading, text);
+  row.append(copy);
+  if (actionLabel) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'button button-secondary button-compact';
+    button.textContent = actionLabel;
+    button.addEventListener('click', action);
+    row.append(button);
+  }
+  return row;
+}
+
+async function loadIdentitySelfService() {
+  if (!passkeyList || !sessionList) return;
+  const [passkeysResponse, sessionsResponse] = await Promise.all([
+    fetch('/api/v1/auth/passkeys', { credentials: 'same-origin', headers: { accept: 'application/json' } }),
+    fetch('/api/v1/auth/sessions', { credentials: 'same-origin', headers: { accept: 'application/json' } }),
+  ]);
+  if (!passkeysResponse.ok || !sessionsResponse.ok) throw new Error('Sicherheitsdaten konnten nicht geladen werden.');
+  const passkeys = (await passkeysResponse.json()).items || [];
+  const sessionPayload = await sessionsResponse.json();
+  const sessions = sessionPayload.items || [];
+  passkeyList.replaceChildren();
+  sessionsList.replaceChildren();
+  document.querySelector('[data-passkey-count]').textContent = `${passkeys.length} aktiv`;
+  document.querySelector('[data-session-count]').textContent = sessionPayload.truncated ? `${sessions.length}+ aktiv` : `${sessions.length} aktiv`;
+  if (!passkeys.length) passkeyList.append(lifecycleRow('Keine Passkeys', 'Richten Sie oben Ihren ersten Passkey ein.'));
+  passkeys.forEach((passkey) => passkeyList.append(lifecycleRow(
+    passkey.display_name || 'Passkey',
+    `Hinzugefügt ${identityDate(passkey.activated_at)}${passkey.last_used_at ? ` · zuletzt verwendet ${identityDate(passkey.last_used_at)}` : ''}`,
+    'Widerrufen',
+    () => {
+      passkeyRevokeForm.elements.factor_id.value = passkey.id;
+      document.querySelector('[data-passkey-revoke-name]').textContent = passkey.display_name || 'Passkey';
+      passkeyRevokeDialog.showModal();
+      passkeyRevokeForm.elements.current_password.focus();
+    },
+  )));
+  sessions.forEach((session) => sessionList.append(lifecycleRow(
+    session.current ? 'Diese Sitzung' : 'Weitere Sitzung',
+    `${session.authentication_kind === 'interactive' ? 'Interaktiv' : session.authentication_kind} · ${session.authentication_assurance === 'multi-factor' ? 'Multi-Faktor' : 'Ein Faktor'} · bis ${identityDate(session.expires_at)}`,
+    'Abmelden',
+    async () => {
+      if (!window.confirm(session.current ? 'Diese Sitzung jetzt beenden?' : 'Diese Sitzung wirklich widerrufen?')) return;
+      const response = await fetch(`/api/v1/auth/sessions/${encodeURIComponent(session.id)}`, { method: 'DELETE', credentials: 'same-origin', headers: { accept: 'application/json', 'X-CSRF-Token': csrfToken() } });
+      if (!response.ok) { showPageNotice('Die Sitzung konnte nicht widerrufen werden.', 'error'); return; }
+      if (session.current) { window.location.replace('/'); return; }
+      showPageNotice('Sitzung widerrufen.', 'success');
+      await loadIdentitySelfService();
+    },
+  )));
+}
+
+function renderGlobalNavigation(session, capabilities = {}) {
   const navigation = document.querySelector('[data-global-navigation]');
   if (!navigation) return;
   const workItems = [
     { icon: 'Ü', label: 'Übersicht', href: '/app' },
-    { icon: 'E', label: 'Inbox', disabled: true },
+    { icon: 'E', label: 'Posteingang', disabled: true },
     { icon: 'A', label: 'Meine Aufgaben', disabled: true },
-    { icon: 'D', label: 'Dokumente', href: '/documents' },
+    ...(capabilities.documents ? [{ icon: 'D', label: 'Dokumente', href: '/documents' }] : []),
     { icon: 'P', label: 'Mein Profil', href: '/profile' },
   ];
   const currentPath = window.location.pathname;
@@ -143,19 +238,15 @@ function renderGlobalNavigation(session) {
     };
     const sections = [
       { label: 'Verwaltung', entries: [
-        { icon: 'identity', label: 'Identität & Zugriff', open: true, items: [
-          { label: 'Benutzerkonten', href: '/admin#users', view: 'users' },
-          { label: 'Rollen & Berechtigungen', href: '/admin#roles', view: 'roles' },
-          { label: 'Anmeldung & Provider', href: '/admin#providers', view: 'providers' },
-        ] },
         { icon: 'organization', label: 'Unternehmensstruktur', href: '/admin#organization', view: 'organization' },
+        { icon: 'identity', label: 'Identität & Zugriff', open: true, items: [
+          { label: 'Arbeitskonten', href: '/admin#users', view: 'users' },
+          { label: 'Rollen & Berechtigungen', href: '/admin#roles', view: 'roles' },
+          { label: 'Anmeldung & Anbieter', href: '/admin#providers', view: 'providers' },
+        ] },
       ] },
       { label: 'Governance', entries: [
-        { icon: 'security', label: 'Sicherheit & Audit', items: [
-          { label: 'Sicherheitsrichtlinien', disabled: true },
-          { label: 'Aktive Sitzungen', disabled: true },
-          { label: 'Audit-Protokoll', href: '/admin#audit', view: 'audit' },
-        ] },
+        { icon: 'security', label: 'Audit-Protokoll', href: '/admin#audit', view: 'audit' },
       ] },
       { label: 'System', entries: [
         { icon: 'operations', label: 'Plattformbetrieb', href: '/admin#operations', view: 'operations' },
@@ -282,12 +373,45 @@ async function loadSession() {
     element.textContent = session.account_class === 'admin' ? 'Administration' : 'Arbeitsbereich';
   });
   document.querySelectorAll('[data-tenant-label]').forEach((element) => {
-    element.textContent = session.tenant_id ? `Mandant · ${session.tenant_id.slice(0, 8)}` : 'Kein Mandant';
+    element.textContent = session.tenant_id ? `Unternehmen · ${session.tenant_id.slice(0, 8)}` : 'Kein Unternehmen';
     element.title = session.tenant_id || '';
   });
   populateProfile(session);
+  renderProfileSecurity(session);
   renderGlobalNavigation(session);
+  if (expected === '/profile') {
+    await loadIdentitySelfService().catch((error) => showPageNotice(error.message, 'error'));
+  }
   window.dispatchEvent(new CustomEvent('werk:session-ready', { detail: session }));
+  if (session.account_class === 'work') {
+    try {
+      const response = await fetch('/api/v1/workspace', {
+        credentials: 'same-origin',
+        cache: 'no-store',
+        headers: { accept: 'application/json' },
+      });
+      const overview = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        const error = new Error(overview.detail || 'Der Arbeitskontext konnte nicht geladen werden.');
+        error.status = response.status;
+        throw error;
+      }
+      document.querySelectorAll('[data-tenant-label]').forEach((element) => {
+        element.textContent = overview.tenant?.name || `Unternehmen · ${String(session.tenant_id || '').slice(0, 8)}`;
+        element.title = overview.tenant?.id || session.tenant_id;
+      });
+      document.querySelectorAll('[data-profile-tenant]').forEach((element) => {
+        element.textContent = overview.tenant?.name
+          ? `${overview.tenant.name} · ${String(overview.tenant.id || session.tenant_id).slice(0, 8)}`
+          : session.tenant_id;
+        element.title = overview.tenant?.id || session.tenant_id;
+      });
+      renderGlobalNavigation(session, overview.capabilities);
+      window.dispatchEvent(new CustomEvent('werk:workspace-ready', { detail: overview }));
+    } catch (error) {
+      window.dispatchEvent(new CustomEvent('werk:workspace-error', { detail: error }));
+    }
+  }
   return session;
 }
 
@@ -297,17 +421,19 @@ document.querySelectorAll('[data-workspace-section]').forEach((control) => {
   });
 });
 
-logout?.addEventListener('click', async () => {
-  logout.disabled = true;
-  try {
-    await fetch('/api/v1/auth/logout', {
-      method: 'POST',
-      credentials: 'same-origin',
-      headers: { accept: 'application/json', 'X-CSRF-Token': csrfToken() },
-    });
-  } finally {
-    window.location.replace('/');
-  }
+logoutButtons.forEach((logout) => {
+  logout.addEventListener('click', async () => {
+    logoutButtons.forEach((button) => { button.disabled = true; });
+    try {
+      await fetch('/api/v1/auth/logout', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { accept: 'application/json', 'X-CSRF-Token': csrfToken() },
+      });
+    } finally {
+      window.location.replace('/');
+    }
+  });
 });
 
 passwordForm?.addEventListener('submit', async (event) => {
@@ -339,6 +465,72 @@ passwordForm?.addEventListener('submit', async (event) => {
     if (session) window.location.replace(destinationForSession(session));
   } catch (error) {
     showPageNotice(error.message || 'Das Passwort konnte nicht geändert werden.', 'error');
+    button.disabled = false;
+  }
+});
+
+passkeyForm?.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  if (!passkeyForm.reportValidity()) return;
+  const form = new FormData(passkeyForm);
+  const displayName = String(form.get('display_name') || '').trim();
+  const button = passkeyForm.querySelector('button[type="submit"]');
+  button.disabled = true;
+  showPageNotice('Passkey-Einrichtung wird gestartet …');
+  try {
+    const optionsResponse = await fetch('/api/v1/auth/passkeys/registration/options', {
+      method: 'POST', credentials: 'same-origin',
+      headers: { accept: 'application/json', 'content-type': 'application/json', 'X-CSRF-Token': csrfToken() },
+      body: JSON.stringify({ current_password: form.get('current_password'), display_name: displayName }),
+    });
+    const options = await optionsResponse.json().catch(() => ({}));
+    if (!optionsResponse.ok) throw new Error(options.detail || 'Die Passkey-Einrichtung konnte nicht gestartet werden.');
+    const credential = await window.WebAuthnClient.create(options);
+    const verificationResponse = await fetch('/api/v1/auth/passkeys/registration/verification', {
+      method: 'POST', credentials: 'same-origin',
+      headers: { accept: 'application/json', 'content-type': 'application/json', 'X-CSRF-Token': csrfToken() },
+      body: JSON.stringify({ display_name: displayName, credential }),
+    });
+    const payload = await verificationResponse.json().catch(() => ({}));
+    if (!verificationResponse.ok) throw new Error(payload.detail || 'Der Passkey wurde abgelehnt.');
+    passkeyForm.reset();
+    showPageNotice(`Passkey „${payload.display_name || displayName}“ wurde hinzugefügt. Alle vorherigen Sessions sind widerrufen.`, 'success');
+    await loadSession();
+  } catch (error) {
+    const message = error?.name === 'NotAllowedError'
+      ? 'Die Passkey-Einrichtung wurde abgebrochen oder ist abgelaufen.'
+      : error.message;
+    showPageNotice(message || 'Die Passkey-Einrichtung ist fehlgeschlagen.', 'error');
+  } finally {
+    button.disabled = false;
+  }
+});
+
+document.querySelectorAll('[data-passkey-revoke-close]').forEach((button) => button.addEventListener('click', () => {
+  passkeyRevokeDialog?.close();
+  passkeyRevokeForm?.reset();
+}));
+
+passkeyRevokeForm?.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  if (!passkeyRevokeForm.reportValidity()) return;
+  const form = new FormData(passkeyRevokeForm);
+  const button = passkeyRevokeForm.querySelector('button[type="submit"]');
+  button.disabled = true;
+  try {
+    const response = await fetch(`/api/v1/auth/passkeys/${encodeURIComponent(String(form.get('factor_id') || ''))}`, {
+      method: 'DELETE', credentials: 'same-origin',
+      headers: { accept: 'application/json', 'content-type': 'application/json', 'X-CSRF-Token': csrfToken() },
+      body: JSON.stringify({ current_password: form.get('current_password') }),
+    });
+    if (!response.ok) throw new Error('Der Passkey konnte nicht widerrufen werden. Prüfen Sie das aktuelle Passwort.');
+    passkeyRevokeDialog.close();
+    passkeyRevokeForm.reset();
+    showPageNotice('Passkey widerrufen. Alle vorherigen Sitzungen wurden beendet.', 'success');
+    await loadSession();
+  } catch (error) {
+    showPageNotice(error.message || 'Der Passkey konnte nicht widerrufen werden.', 'error');
+  } finally {
     button.disabled = false;
   }
 });
