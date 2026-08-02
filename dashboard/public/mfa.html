@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="de" data-density="cozy">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>WERK · Sicherheitsprüfung</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <script src="/mfa.js" defer></script>
+  </head>
+  <body data-mfa-page="challenge">
+    <div class="login-shell">
+      <div class="login-background" aria-hidden="true"><div class="login-grid"></div><div class="login-halo"></div></div>
+      <header class="login-header"><a class="brand" href="/"><span class="brand-mark"><span class="brand-mark-dot"></span></span><span class="brand-name">WERK</span><span class="brand-separator"></span><span class="brand-tag">Core Identity</span></a></header>
+      <main class="login-card">
+        <p class="login-kicker">Zweiter Faktor</p>
+        <div class="login-heading"><h1>Sicherheitsprüfung</h1><p>Geben Sie den sechsstelligen Code Ihrer Authenticator-App oder einen unbenutzten Recovery-Code ein.</p></div>
+        <form class="login-form" data-mfa-challenge-form>
+          <label class="form-field" for="mfa-code"><span>Bestätigungscode</span><input id="mfa-code" name="code" type="text" inputmode="numeric" autocomplete="one-time-code" required autofocus /></label>
+          <p class="form-notice" data-mfa-notice role="status" hidden></p>
+          <button class="button button-primary login-submit" type="submit">Sicher anmelden</button>
+        </form>
+        <p class="routing-note"><a href="/">Anmeldung abbrechen</a></p>
+      </main>
+      <footer class="login-footer"><span class="mono">WERK · MFA</span><span>Lokale Sicherheitsprüfung</span></footer>
+    </div>
+  </body>
+</html>

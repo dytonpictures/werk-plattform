@@ -1,0 +1,4 @@
+interface:
+  display_name: "Node.js Static Analysis"
+  short_description: "Agent-ready analysis for Node.js code"
+  default_prompt: "Use $nodejs-static-analysis to analyze this Node.js project and report verified, prioritized findings."

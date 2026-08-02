@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="de" data-density="cozy">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>WERK · Mein Profil</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <script src="/webauthn.js" defer></script>
+    <script src="/session.js" defer></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main-content">Direkt zum Profil</a>
+    <div class="workspace-shell" data-authenticated-page="/profile">
+      <header class="workspace-header">
+        <a class="brand" data-profile-home href="/"><span class="brand-mark"><span class="brand-mark-dot"></span></span><span class="brand-name">WERK</span><span class="brand-separator"></span><span>Konto</span></a>
+        <div class="workspace-actions"><a class="button" data-profile-back href="/">Zurück</a><details class="profile-menu"><summary aria-label="Profilmenü öffnen"><span class="profile-menu-avatar" data-profile-initials>W</span><span class="profile-menu-label"><strong data-profile-name>Profil</strong><small data-profile-account-class>Konto</small></span><span class="profile-menu-chevron" aria-hidden="true">⌄</span></summary><div class="profile-menu-popover"><div class="profile-menu-identity"><strong data-profile-name>Profil wird geladen</strong><span data-profile-login>—</span></div><div class="profile-menu-separator"></div><a data-profile-home href="/">Startbereich</a><button data-page-logout type="button">Abmelden</button></div></details></div>
+      </header>
+      <div class="global-layout">
+        <nav class="global-navigation" data-global-navigation aria-label="Globale Navigation"></nav>
+        <main class="workspace-main profile-main" id="main-content" tabindex="-1">
+        <p class="login-kicker">Konto &amp; Sicherheit</p>
+        <h1>Mein Profil</h1>
+        <p>Persönliche Kontodaten, Anmeldeschutz und aktive Sitzungen verwalten.</p>
+        <section class="workspace-panel profile-card">
+          <div class="profile-avatar" data-profile-initials>W</div>
+          <div><h2 data-profile-name>Profil wird geladen</h2><p data-profile-login>—</p><span class="phase-badge" data-profile-account-class>Kontoart</span></div>
+        </section>
+        <section class="profile-grid" aria-label="Identitätsdetails">
+          <article class="workspace-panel profile-detail"><span>Anmeldename</span><strong data-profile-login>—</strong><small>Wird von der Administration verwaltet</small></article>
+          <article class="workspace-panel profile-detail"><span data-profile-tenant-label>Zugeordnetes Unternehmen</span><strong data-profile-tenant>—</strong><small data-profile-tenant-copy>Gilt für dieses Arbeitskonto</small></article>
+          <article class="workspace-panel profile-detail"><span>Angemeldet bis</span><strong data-profile-expires>—</strong><small>Danach ist eine erneute Anmeldung erforderlich</small></article>
+        </section>
+        <section class="workspace-panel security-panel">
+          <div class="security-panel-copy"><div class="security-panel-heading"><h2>Passkey</h2><span class="status-badge status-active" data-profile-security-badge>Empfohlen</span></div><p data-profile-security-copy>Ein Passkey schützt die Anmeldung phishing-resistent und kann freiwillig eingerichtet werden.</p></div>
+          <form class="profile-passkey-form" data-profile-passkey-form>
+            <label class="form-field"><span>Aktuelles Passwort</span><input name="current_password" type="password" autocomplete="current-password" required /></label>
+            <label class="form-field"><span>Name des Passkeys</span><input name="display_name" type="text" value="Mein Passkey" maxlength="120" required /></label>
+            <button class="button button-primary" type="submit">Passkey hinzufügen</button>
+          </form>
+        </section>
+        <section class="workspace-panel security-panel">
+          <div class="security-panel-copy"><div class="security-panel-heading"><h2>Meine Passkeys</h2><span class="status-badge" data-passkey-count>Wird geladen</span></div><p>Aktive Passkeys dieses Kontos. Ein Widerruf verlangt Ihr aktuelles Passwort und meldet alle anderen Sitzungen ab.</p></div>
+          <div class="operations-list" data-passkey-list aria-live="polite"><p>Passkeys werden geladen …</p></div>
+        </section>
+        <section class="workspace-panel security-panel">
+          <div class="security-panel-copy"><div class="security-panel-heading"><h2>Meine Sitzungen</h2><span class="status-badge" data-session-count>Wird geladen</span></div><p>Browser, in denen dieses Konto derzeit angemeldet ist. Nicht mehr benötigte Sitzungen können hier beendet werden.</p></div>
+          <div class="operations-list" data-session-list aria-live="polite"><p>Sitzungen werden geladen …</p></div>
+        </section>
+        <dialog class="admin-dialog" data-passkey-revoke-dialog>
+          <form class="admin-dialog-form login-form" data-passkey-revoke-form>
+            <header class="admin-dialog-header"><div><p class="admin-breadcrumb">Passkey widerrufen</p><h2 data-passkey-revoke-name>Passkey</h2></div><button class="icon-button" type="button" data-passkey-revoke-close aria-label="Dialog schließen">×</button></header>
+            <div class="admin-dialog-content"><input type="hidden" name="factor_id" /><label class="form-field"><span>Aktuelles Passwort</span><input name="current_password" type="password" autocomplete="current-password" required /></label><p>Alle vorhandenen Sitzungen werden widerrufen. Diese Browsersitzung wird sicher ersetzt.</p></div>
+            <footer class="admin-dialog-actions"><button class="button button-secondary" type="button" data-passkey-revoke-close>Abbrechen</button><button class="button button-primary" type="submit">Passkey widerrufen</button></footer>
+          </form>
+        </dialog>
+        <p class="form-notice" data-page-notice hidden></p>
+        </main>
+      </div>
+    </div>
+  </body>
+</html>

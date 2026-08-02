@@ -1,54 +1,81 @@
 name: CI
 
 on:
-  push:
-    branches: [main, 'agent/**']
   pull_request:
+  push:
+    branches: [Canary]
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  backend:
-    name: Go checks
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: apps/api
+  quality:
+    name: Format, contracts and vet
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v6
         with:
-          go-version-file: apps/api/go.mod
-          cache: true
-      - run: gofmt -d .
-      - run: go vet ./...
-      - run: go test ./... -cover
-      - run: go build ./cmd/server
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Verify generated and formatted files
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -z "$(gofmt -l cmd internal dashboard packaging)"
+          jq empty api/openapi.json
+          for file in dashboard/public/*.js dashboard/server.mjs; do
+            node --check "$file"
+          done
+      - name: Vet
+        run: go vet ./...
+      - name: Ensure modules are tidy
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp go.mod /tmp/werk-go.mod
+          cp go.sum /tmp/werk-go.sum
+          go mod tidy
+          diff -u /tmp/werk-go.mod go.mod
+          diff -u /tmp/werk-go.sum go.sum
 
-  frontend:
-    name: Web checks
-    runs-on: ubuntu-latest
+  test:
+    name: Unit and race tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v6
         with:
-          node-version: 24
-          cache: npm
-      - run: npm ci
-      - run: npm run lint
-      - run: npm run typecheck
-      - run: npm test
-      - run: npm run build
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Test with race detector
+        run: go test -race -count=1 ./...
 
-  contracts:
-    name: Contracts and Compose
-    runs-on: ubuntu-latest
+  build:
+    name: Native build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v6
         with:
-          node-version: 24
-      - run: npm ci --ignore-scripts
-      - run: node -e "const fs=require('fs'); const yaml=fs.readFileSync('apps/api/openapi/openapi.yaml','utf8'); if (!yaml.includes('openapi: 3.1.0')) process.exit(1)"
-      - run: POSTGRES_PASSWORD=ci-only-password docker compose config --quiet
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Build all commands
+        env:
+          CGO_ENABLED: "0"
+        run: go build -trimpath ./cmd/...
+

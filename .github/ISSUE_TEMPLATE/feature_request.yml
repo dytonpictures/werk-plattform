@@ -1,0 +1,27 @@
+name: Funktionswunsch
+description: Eine nachvollziehbare Erweiterung vorschlagen
+title: "[Feature]: "
+labels: [enhancement, triage]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: Welches Nutzer- oder Betriebsproblem soll gelöst werden?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Vorschlag und Alternativen
+    validations:
+      required: true
+  - type: checkboxes
+    id: boundaries
+    attributes:
+      label: Architekturgrenzen
+      options:
+        - label: Tenant-, Kontoarten-, Audit- und Datenhoheitsgrenzen wurden berücksichtigt.
+          required: true
+        - label: Ein schwer rückgängig zu machender Entscheid wird als ADR vorgeschlagen.
+

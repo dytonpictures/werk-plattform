@@ -1,0 +1,125 @@
+name: Release
+
+on:
+  push:
+    tags:
+      # GitHub uses glob syntax here; the verify job enforces exact SemVer.
+      - "v[0-9]*.[0-9]*.[0-9]*"
+      - "v[0-9]*.[0-9]*.[0-9]*-*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing SemVer tag to release
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Verify release source
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      version: ${{ steps.release.outputs.version }}
+      prerelease: ${{ steps.release.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ inputs.tag || github.ref }}
+      - id: release
+        name: Validate tag and Canary ancestry
+        shell: bash
+        env:
+          REQUESTED_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$REQUESTED_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
+            echo "not a supported SemVer release tag: $REQUESTED_TAG" >&2
+            exit 1
+          fi
+          git fetch --no-tags origin Canary
+          git merge-base --is-ancestor HEAD origin/Canary
+          version="${REQUESTED_TAG#v}"
+          prerelease=false
+          [[ "$version" == *-* ]] && prerelease=true
+          echo "tag=$REQUESTED_TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
+
+  test:
+    name: Release quality gate
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          ref: ${{ needs.verify.outputs.tag }}
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Format, contracts, vet and race tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -z "$(gofmt -l cmd internal dashboard packaging)"
+          jq empty api/openapi.json
+          for file in dashboard/public/*.js dashboard/server.mjs; do node --check "$file"; done
+          go vet ./...
+          go test -race -count=1 ./...
+
+  integration:
+    name: Release database gate
+    needs: verify
+    uses: ./.github/workflows/integration.yml
+    permissions:
+      contents: read
+
+  package:
+    name: Package and publish
+    needs: [verify, test, integration]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          ref: ${{ needs.verify.outputs.tag }}
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Build native release artifacts
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: sh scripts/package-release.sh "$VERSION" dist
+      - name: Create SPDX SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          path: .
+          format: spdx-json
+          output-file: dist/werk-platform.spdx.json
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.verify.outputs.tag }}
+          PRERELEASE: ${{ needs.verify.outputs.prerelease }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          args=(--verify-tag --generate-notes)
+          [[ "$PRERELEASE" == true ]] && args+=(--prerelease)
+          gh release create "$TAG" dist/* "${args[@]}"

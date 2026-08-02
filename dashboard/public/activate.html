@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="de" data-density="cozy">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="WERK-Arbeitskonto sicher aktivieren." />
+    <title>WERK · Konto aktivieren</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <script src="/activate.js" defer></script>
+  </head>
+  <body>
+    <div class="login-shell">
+      <div class="login-background" aria-hidden="true"><div class="login-grid"></div><div class="login-halo"></div></div>
+      <header class="login-header">
+        <a class="brand" href="/" aria-label="WERK Anmeldung">
+          <span class="brand-mark" aria-hidden="true"><span class="brand-mark-dot"></span></span>
+          <span class="brand-name">WERK</span>
+          <span class="brand-separator" aria-hidden="true"></span>
+          <span class="brand-tag">Core Identity</span>
+        </a>
+      </header>
+      <main class="login-card" id="activation-card">
+        <p class="login-kicker">Einmalige Aktivierung</p>
+        <div class="login-heading">
+          <h1>Arbeitskonto aktivieren</h1>
+          <p>Legen Sie ein eigenes Passwort fest. Der Einladungslink wird dabei einmalig verbraucht.</p>
+        </div>
+        <form class="login-form" data-activation-form hidden>
+          <label class="form-field">
+            <span>Neues Passwort</span>
+            <input name="new_password" type="password" autocomplete="new-password" minlength="12" maxlength="1024" required autofocus />
+          </label>
+          <label class="form-field">
+            <span>Neues Passwort bestätigen</span>
+            <input name="confirm_password" type="password" autocomplete="new-password" minlength="12" maxlength="1024" required />
+          </label>
+          <button class="button button-primary login-submit" type="submit">Konto aktivieren</button>
+        </form>
+        <section class="activation-result" data-activation-success hidden>
+          <span class="activation-result-icon" aria-hidden="true">✓</span>
+          <div><h2>Konto ist aktiviert</h2><p>Melden Sie sich jetzt regulär mit Ihrem Anmeldenamen und dem neuen Passwort an.</p></div>
+          <a class="button button-primary" href="/">Zur Anmeldung</a>
+        </section>
+        <p class="form-notice" data-activation-notice role="status">Einladung wird geprüft …</p>
+      </main>
+      <footer class="login-footer"><span class="mono">WERK · AKTIVIERUNG</span><span>Keine automatische Anmeldung</span></footer>
+    </div>
+  </body>
+</html>

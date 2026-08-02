@@ -1,0 +1,9 @@
+# Replace this fallback with dedicated teams once they exist.
+* @dytonpictures
+
+# Security boundaries and supply-chain automation require explicit owner review.
+/.github/workflows/ @dytonpictures
+/.github/CODEOWNERS @dytonpictures
+/.github/dependabot.yml @dytonpictures
+/deploy/ @dytonpictures
+/internal/platform/migrate/migrations/ @dytonpictures

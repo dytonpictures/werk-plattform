@@ -1,0 +1,79 @@
+name: Integration
+
+on:
+  workflow_call:
+  pull_request:
+    paths:
+      - "cmd/**"
+      - "internal/**"
+      - "deploy/**"
+      - "scripts/**"
+      - "go.mod"
+      - "go.sum"
+      - ".github/workflows/integration.yml"
+  push:
+    branches: [Canary]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: integration-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  postgres:
+    name: PostgreSQL, migrations and RLS
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    services:
+      postgres:
+        image: postgres:18.1-bookworm
+        env:
+          POSTGRES_PASSWORD: werk-ci-superuser
+          POSTGRES_DB: werk_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d werk_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      WERK_TEST_MIGRATOR_DATABASE_URL: postgresql://werk_migrator:ci-migrator-7Jv2pQ@127.0.0.1:5432/werk_ci?sslmode=disable
+      WERK_TEST_WORK_DATABASE_URL: postgresql://werk_work_runtime:ci-work-8Kw3rT@127.0.0.1:5432/werk_ci?sslmode=disable
+      WERK_TEST_IDENTITY_DATABASE_URL: postgresql://werk_identity_runtime:ci-identity-9Lx4sU@127.0.0.1:5432/werk_ci?sslmode=disable
+      WERK_TEST_ADMIN_DATABASE_URL: postgresql://werk_admin_runtime:ci-admin-2My5tV@127.0.0.1:5432/werk_ci?sslmode=disable
+      WERK_TEST_SERVICE_DATABASE_URL: postgresql://werk_service_runtime:ci-service-3Nz6uW@127.0.0.1:5432/werk_ci?sslmode=disable
+      WERK_TEST_WORKER_DATABASE_URL: postgresql://werk_worker_runtime:ci-worker-4Pa7vX@127.0.0.1:5432/werk_ci?sslmode=disable
+      WERK_TEST_BACKUP_DATABASE_URL: postgresql://werk_backup:ci-backup-5Qb8wY@127.0.0.1:5432/werk_ci?sslmode=disable
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Bootstrap separated database roles
+        env:
+          PGHOST: 127.0.0.1
+          PGPORT: "5432"
+          PGDATABASE: werk_ci
+          PGUSER: postgres
+          PGPASSWORD: werk-ci-superuser
+          WERK_ENV: test
+          WERK_DB_NAME: werk_ci
+          WERK_MIGRATOR_PASSWORD: ci-migrator-7Jv2pQ
+          WERK_WORK_PASSWORD: ci-work-8Kw3rT
+          WERK_IDENTITY_PASSWORD: ci-identity-9Lx4sU
+          WERK_ADMIN_PASSWORD: ci-admin-2My5tV
+          WERK_SERVICE_PASSWORD: ci-service-3Nz6uW
+          WERK_WORKER_PASSWORD: ci-worker-4Pa7vX
+          WERK_BACKUP_PASSWORD: ci-backup-5Qb8wY
+        run: sh deploy/postgres/bootstrap-roles.sh
+      - name: Run full PostgreSQL integration suite
+        run: go test -count=1 ./...
+      - name: Verify migrations are repeatable
+        run: go test -count=2 ./internal/platform/migrate

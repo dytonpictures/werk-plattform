@@ -1,0 +1,4 @@
+interface:
+  display_name: "Go Static Analysis"
+  short_description: "Agent-ready static analysis for Go code"
+  default_prompt: "Use $go-static-analysis to analyze this Go project and report verified, prioritized findings."

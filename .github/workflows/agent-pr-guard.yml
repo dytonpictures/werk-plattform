@@ -1,0 +1,38 @@
+name: Agent PR guard
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  guard:
+    name: Agent and sensitive-change policy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Reject committed secrets and protected generated changes
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          changed="$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")"
+          if grep -Eq '(^|/)\.env($|\.)|\.(pem|key|p12|pfx)$|(^|/)(id_rsa|id_ed25519)$' <<<"$changed"; then
+            echo "A secret-like file was committed. Use repository/environment secrets instead." >&2
+            exit 1
+          fi
+          if grep -Eq '^internal/platform/migrate/migrations/' <<<"$changed"; then
+            echo "::notice::Migration changed: require database-owner review and Integration check."
+          fi
+          if grep -Eq '^(\.github/workflows/|CODEOWNERS|deploy/|internal/platform/migrate/migrations/)' <<<"$changed"; then
+            echo "::notice::Sensitive path changed: CODEOWNERS approval is required by branch protection."
+          fi
+
